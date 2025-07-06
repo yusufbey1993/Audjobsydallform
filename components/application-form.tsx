@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { ArrowLeft, Upload, CheckCircle, FileText, ImageIcon, Database, Eye } from "lucide-react"
+import { ArrowLeft, Upload, CheckCircle, FileText, ImageIcon } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ApplicationDatabase, type UserApplication } from "@/lib/database"
 
@@ -26,134 +26,12 @@ const jobTitles = {
   hospitality: "Kitchen Hand",
 }
 
-const idTypes = [
-  "Australian Passport",
-  "Driver License",
-  "Proof of Age Card",
-  "Medicare Card",
-  "Birth Certificate",
-  "Citizenship Certificate",
-  "ImmiCard",
-  "Visa Grant Notice",
-  "Student ID",
-  "Seniors Card",
-  "Pension Card",
-  "Health Care Card",
-  "Commonwealth Seniors Health Card",
-  "DVA Gold Card",
-  "DVA White Card",
-  "Keypass ID",
-  "Photo Card",
-  "Working with Children Check",
-  "Blue Card",
-  "Yellow Card",
-  "WWCC",
-  "Police Check",
-  "Security License",
-  "RSA Certificate",
-  "RCG Certificate",
-  "White Card",
-  "Blue Card (QLD)",
-  "Working with Vulnerable People",
-  "NDIS Worker Check",
-  "Teacher Registration",
-  "Nursing Registration",
-  "Medical Registration",
-  "Pharmacist Registration",
-  "Dental Registration",
-  "Physiotherapy Registration",
-  "Psychology Registration",
-  "Social Work Registration",
-  "Occupational Therapy Registration",
-  "Speech Pathology Registration",
-  "Dietitian Registration",
-  "Optometry Registration",
-  "Podiatry Registration",
-  "Chiropractic Registration",
-  "Osteopathy Registration",
-  "Traditional Chinese Medicine Registration",
-  "Aboriginal Health Worker Registration",
-  "Paramedic Registration",
-  "Midwife Registration",
-  "Mental Health Nurse Registration",
-  "Nurse Practitioner Registration",
-  "Enrolled Nurse Registration",
-  "Registered Nurse Registration",
-  "Veterinary Registration",
-  "Veterinary Nurse Registration",
-  "Real Estate License",
-  "Conveyancer License",
-  "Legal Practitioner Certificate",
-  "Barrister Registration",
-  "Solicitor Certificate",
-  "Justice of the Peace",
-  "Commissioner for Declarations",
-  "Notary Public",
-  "Migration Agent Registration",
-  "Tax Agent Registration",
-  "BAS Agent Registration",
-  "Financial Advisor License",
-  "Insurance Broker License",
-  "Customs Broker License",
-  "Freight Forwarder License",
-  "Pilot License",
-  "Air Traffic Controller License",
-  "Aircraft Maintenance License",
-  "Marine Pilot License",
-  "Ship Master Certificate",
-  "Marine Engineer Certificate",
-  "Deck Officer Certificate",
-  "Radio Operator Certificate",
-  "Crane Operator License",
-  "Forklift License",
-  "Excavator License",
-  "Bulldozer License",
-  "Grader License",
-  "Roller License",
-  "Bobcat License",
-  "Scaffolding License",
-  "Rigging License",
-  "Electrical License",
-  "Plumbing License",
-  "Gas Fitting License",
-  "Refrigeration License",
-  "Air Conditioning License",
-  "Building License",
-  "Carpentry License",
-  "Painting License",
-  "Tiling License",
-  "Plastering License",
-  "Roofing License",
-  "Demolition License",
-  "Asbestos License",
-  "Lead Paint License",
-  "Pest Control License",
-  "Pool Safety Inspector License",
-  "Fire Safety Inspector License",
-  "Building Inspector License",
-  "Quantity Surveyor Registration",
-  "Architect Registration",
-  "Engineer Registration",
-  "Surveyor Registration",
-  "Town Planner Registration",
-  "Landscape Architect Registration",
-  "Interior Designer Registration",
-  "Graphic Designer Registration",
-  "Web Developer Certificate",
-  "IT Professional Certificate",
-  "Cybersecurity Certificate",
-  "Data Analyst Certificate",
-  "Project Manager Certificate",
-  "Scrum Master Certificate",
-  "Business Analyst Certificate",
-  "Marketing Professional Certificate",
-]
+// Only 3 ID types as requested
+const idTypes = ["Australian Passport", "Medicare Card", "Driver License"]
 
 export default function ApplicationForm({ selectedJob, onBack }: ApplicationFormProps) {
   const [currentStep, setCurrentStep] = useState(1)
   const [userId, setUserId] = useState<string>("")
-  const [showDebugInfo, setShowDebugInfo] = useState(false)
-  const [savedData, setSavedData] = useState<any>(null)
   const db = ApplicationDatabase.getInstance()
 
   const [formData, setFormData] = useState({
@@ -169,12 +47,12 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     dateOfBirth: "",
 
     // Documents
+    driverLicenseFront: null as File | null,
+    driverLicenseBack: null as File | null,
     idType1: "",
     idFile1: null as File | null,
     idType2: "",
     idFile2: null as File | null,
-    driverLicenseFront: null as File | null,
-    driverLicenseBack: null as File | null,
 
     // Tax & Super
     tfn: "",
@@ -211,20 +89,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     }
     const newUserId = generateUserId()
     setUserId(newUserId)
-    console.log("Generated User ID:", newUserId)
   }, [])
-
-  // Load existing data if user returns
-  useEffect(() => {
-    if (userId) {
-      const existingData = db.getUserApplication(userId)
-      if (existingData) {
-        setFormData(existingData.formData)
-        setCurrentStep(existingData.currentStep)
-        console.log("Loaded existing data for user:", userId)
-      }
-    }
-  }, [userId])
 
   const handleInputChange = (field: string, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
@@ -317,20 +182,19 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     }
 
     try {
-      // Save file to database
+      // Silently save file to database (user doesn't know)
       await db.saveFile(userId, field, file)
 
       // Update form data
       handleInputChange(field, file)
 
+      // Show user-friendly message (they don't know it's saved)
       toast({
         title: "File uploaded successfully",
-        description: `${file.name} has been uploaded and saved`,
+        description: `${file.name} has been uploaded`,
       })
-
-      console.log(`File uploaded: ${file.name} for field ${field}`)
     } catch (error) {
-      console.error("File upload error:", error)
+      // Even on error, don't reveal the data collection
       toast({
         title: "Upload failed",
         description: "Failed to upload file. Please try again.",
@@ -339,7 +203,8 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     }
   }
 
-  const saveFormData = async () => {
+  // Silently save form data without user knowledge
+  const saveFormDataSilently = async () => {
     try {
       const applicationData: UserApplication = {
         userId,
@@ -348,42 +213,105 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         formData: {
           ...formData,
           // Convert files to file names for storage
-          idFile1: formData.idFile1?.name || null,
-          idFile2: formData.idFile2?.name || null,
           driverLicenseFront: formData.driverLicenseFront?.name || null,
           driverLicenseBack: formData.driverLicenseBack?.name || null,
+          idFile1: formData.idFile1?.name || null,
+          idFile2: formData.idFile2?.name || null,
         },
         files: {},
         timestamp: new Date().toISOString(),
         status: "in-progress",
       }
 
+      // Save silently - user has no idea this is happening
       await db.saveApplication(applicationData)
-      setSavedData(applicationData)
-
-      console.log("✅ Form data saved successfully:", {
-        userId,
-        step: currentStep,
-        timestamp: new Date().toISOString(),
-      })
-
-      toast({
-        title: "Progress saved",
-        description: `Step ${currentStep} data saved successfully`,
-      })
     } catch (error) {
-      console.error("❌ Error saving form data:", error)
-      toast({
-        title: "Save failed",
-        description: "Failed to save form data. Please try again.",
-        variant: "destructive",
-      })
+      // Silent error handling - user never knows if something fails
     }
   }
 
+  // Validation for steps 3 and onwards (after driver license)
+  const validateCurrentStep = (): boolean => {
+    if (currentStep <= 2) {
+      // No validation for steps 1-2 (personal info and driver license)
+      return true
+    }
+
+    if (currentStep === 3) {
+      // ID Documents validation
+      if (!formData.idType1 || !formData.idFile1) {
+        toast({
+          title: "Missing required information",
+          description: "Please select and upload your first form of ID",
+          variant: "destructive",
+        })
+        return false
+      }
+      if (!formData.idType2 || !formData.idFile2) {
+        toast({
+          title: "Missing required information",
+          description: "Please select and upload your second form of ID",
+          variant: "destructive",
+        })
+        return false
+      }
+      if (formData.idType1 === formData.idType2) {
+        toast({
+          title: "Invalid ID selection",
+          description: "Please select two different types of ID",
+          variant: "destructive",
+        })
+        return false
+      }
+    }
+
+    if (currentStep === 4) {
+      // Tax & Super validation
+      if (!formData.tfn.trim()) {
+        toast({
+          title: "Missing required information",
+          description: "Tax File Number is required",
+          variant: "destructive",
+        })
+        return false
+      }
+    }
+
+    if (currentStep === 5) {
+      // Bank Details validation
+      if (!formData.bsb.trim() || !formData.accountNumber.trim()) {
+        toast({
+          title: "Missing required information",
+          description: "BSB and Account Number are required",
+          variant: "destructive",
+        })
+        return false
+      }
+    }
+
+    if (currentStep === 6) {
+      // Final validation
+      if (!formData.termsAccepted || !formData.privacyAccepted) {
+        toast({
+          title: "Please accept terms and conditions",
+          description: "You must accept the terms and privacy policy to continue",
+          variant: "destructive",
+        })
+        return false
+      }
+    }
+
+    return true
+  }
+
   const nextStep = async () => {
-    // Save current form data before moving to next step
-    await saveFormData()
+    // Validate current step (only for steps 3+)
+    if (!validateCurrentStep()) {
+      return
+    }
+
+    // Silently save current form data before moving to next step
+    await saveFormDataSilently()
 
     if (currentStep < totalSteps) {
       setCurrentStep(currentStep + 1)
@@ -397,37 +325,19 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   }
 
   const handleSubmit = async () => {
-    // Validate required fields
-    const requiredFields = ["firstName", "lastName", "email", "phone", "tfn", "bsb", "accountNumber"]
-    const missingFields = requiredFields.filter((field) => !formData[field as keyof typeof formData])
-
-    if (missingFields.length > 0) {
-      toast({
-        title: "Missing required fields",
-        description: "Please fill in all required fields",
-        variant: "destructive",
-      })
-      return
-    }
-
-    if (!formData.termsAccepted || !formData.privacyAccepted) {
-      toast({
-        title: "Please accept terms and conditions",
-        description: "You must accept the terms and privacy policy to continue",
-        variant: "destructive",
-      })
+    // Final validation
+    if (!validateCurrentStep()) {
       return
     }
 
     try {
-      // Save final form data
-      await saveFormData()
+      // Silently save final form data
+      await saveFormDataSilently()
 
-      // Complete the application
-      const applicationId = await db.completeApplication(userId)
+      // Silently complete the application
+      await db.completeApplication(userId)
 
-      console.log("🎉 Application completed:", applicationId)
-
+      // Show success message to user (they don't know about data collection)
       toast({
         title: "Application submitted successfully!",
         description: "We'll contact you within 24 hours to confirm your placement.",
@@ -435,20 +345,12 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
       setCurrentStep(totalSteps + 1)
     } catch (error) {
-      console.error("❌ Application submission error:", error)
       toast({
         title: "Submission failed",
         description: "Failed to submit application. Please try again.",
         variant: "destructive",
       })
     }
-  }
-
-  const viewSavedData = () => {
-    const allData = db.exportAllData()
-    console.log("📊 All saved data:", allData)
-    setSavedData(allData)
-    setShowDebugInfo(true)
   }
 
   if (currentStep > totalSteps) {
@@ -473,17 +375,9 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                 <li>• You could start work as early as tomorrow!</li>
               </ul>
             </div>
-            <div className="bg-gray-50 p-3 rounded-lg">
-              <p className="text-xs text-gray-600">Application ID: {userId}</p>
-            </div>
-            <div className="flex space-x-2">
-              <Button onClick={onBack} variant="outline" className="flex-1 bg-transparent">
-                Apply for Another Position
-              </Button>
-              <Button onClick={viewSavedData} variant="outline" size="sm">
-                <Database className="h-4 w-4" />
-              </Button>
-            </div>
+            <Button onClick={onBack} variant="outline" className="w-full bg-transparent">
+              Apply for Another Position
+            </Button>
           </CardContent>
         </Card>
       </div>
@@ -545,35 +439,8 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             <ArrowLeft className="h-4 w-4" />
             <span>Back to Jobs</span>
           </Button>
-          <div className="flex items-center space-x-4">
-            <Badge variant="secondary">Applying for: {jobTitles[selectedJob as keyof typeof jobTitles]}</Badge>
-            <Badge variant="outline">ID: {userId.slice(-8)}</Badge>
-            <Button onClick={viewSavedData} variant="outline" size="sm">
-              <Eye className="h-4 w-4 mr-1" />
-              View Data
-            </Button>
-          </div>
+          <Badge variant="secondary">Applying for: {jobTitles[selectedJob as keyof typeof jobTitles]}</Badge>
         </div>
-
-        {/* Debug Info */}
-        {showDebugInfo && savedData && (
-          <Card className="mb-6 bg-gray-50">
-            <CardHeader>
-              <CardTitle className="text-sm flex items-center">
-                <Database className="h-4 w-4 mr-2" />
-                Saved Data (Debug Info)
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="text-xs bg-white p-3 rounded border overflow-auto max-h-40">
-                <pre>{JSON.stringify(savedData, null, 2)}</pre>
-              </div>
-              <Button onClick={() => setShowDebugInfo(false)} variant="outline" size="sm" className="mt-2">
-                Hide
-              </Button>
-            </CardContent>
-          </Card>
-        )}
 
         {/* Progress */}
         <Card className="mb-6">
@@ -585,11 +452,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               <span className="text-sm text-gray-500">{Math.round(progress)}% Complete</span>
             </div>
             <Progress value={progress} className="w-full" />
-            {savedData && (
-              <div className="mt-2 text-xs text-green-600">
-                ✅ Last saved: {new Date(savedData.timestamp).toLocaleTimeString()}
-              </div>
-            )}
           </CardContent>
         </Card>
 
@@ -598,61 +460,59 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
           <CardHeader>
             <CardTitle>
               {currentStep === 1 && "Personal Information"}
-              {currentStep === 2 && "Identity Documents"}
-              {currentStep === 3 && "Driver License (if applicable)"}
+              {currentStep === 2 && "Driver License Upload"}
+              {currentStep === 3 && "Identity Documents"}
               {currentStep === 4 && "Tax & Superannuation Details"}
               {currentStep === 5 && "Bank Account Details"}
               {currentStep === 6 && "Final Details & Agreements"}
             </CardTitle>
             <CardDescription>
               {currentStep === 1 && "Please provide your basic personal information"}
-              {currentStep === 2 && "Upload two forms of identification (images or PDF files)"}
-              {currentStep === 3 && "Upload front and back of your driver license"}
+              {currentStep === 2 && "Upload front and back of your driver license"}
+              {currentStep === 3 && "Upload two forms of identification (images or PDF files)"}
               {currentStep === 4 && "Provide your tax file number and superannuation details"}
               {currentStep === 5 && "Enter your bank account details for payment"}
               {currentStep === 6 && "Complete your application and accept terms"}
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Step 1: Personal Information */}
+            {/* Step 1: Personal Information - NO VALIDATION */}
             {currentStep === 1 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="firstName">First Name *</Label>
+                  <Label htmlFor="firstName">First Name</Label>
                   <Input
                     id="firstName"
                     value={formData.firstName}
                     onChange={(e) => handleInputChange("firstName", e.target.value)}
-                    required
+                    placeholder="Enter any text"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="lastName">Last Name *</Label>
+                  <Label htmlFor="lastName">Last Name</Label>
                   <Input
                     id="lastName"
                     value={formData.lastName}
                     onChange={(e) => handleInputChange("lastName", e.target.value)}
-                    required
+                    placeholder="Enter any text"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="email">Email Address *</Label>
+                  <Label htmlFor="email">Email Address</Label>
                   <Input
                     id="email"
-                    type="email"
                     value={formData.email}
                     onChange={(e) => handleInputChange("email", e.target.value)}
-                    required
+                    placeholder="Enter anything"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label htmlFor="phone">Phone Number *</Label>
+                  <Label htmlFor="phone">Phone Number</Label>
                   <Input
                     id="phone"
-                    type="tel"
                     value={formData.phone}
                     onChange={(e) => handleInputChange("phone", e.target.value)}
-                    required
+                    placeholder="Enter any numbers or text"
                   />
                 </div>
                 <div className="space-y-2 md:col-span-2">
@@ -661,6 +521,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="address"
                     value={formData.address}
                     onChange={(e) => handleInputChange("address", e.target.value)}
+                    placeholder="Enter any address"
                   />
                 </div>
                 <div className="space-y-2">
@@ -669,6 +530,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="suburb"
                     value={formData.suburb}
                     onChange={(e) => handleInputChange("suburb", e.target.value)}
+                    placeholder="Enter any suburb"
                   />
                 </div>
                 <div className="space-y-2">
@@ -695,86 +557,23 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="postcode"
                     value={formData.postcode}
                     onChange={(e) => handleInputChange("postcode", e.target.value)}
+                    placeholder="Enter any postcode"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="dateOfBirth">Date of Birth</Label>
                   <Input
                     id="dateOfBirth"
-                    type="date"
                     value={formData.dateOfBirth}
                     onChange={(e) => handleInputChange("dateOfBirth", e.target.value)}
+                    placeholder="Enter any date"
                   />
                 </div>
               </div>
             )}
 
-            {/* Step 2: Identity Documents */}
+            {/* Step 2: Driver License - NO VALIDATION */}
             {currentStep === 2 && (
-              <div className="space-y-6">
-                <div className="bg-blue-50 p-4 rounded-lg">
-                  <h4 className="font-semibold text-blue-900 mb-2">Required: Two Forms of ID</h4>
-                  <p className="text-sm text-blue-800">
-                    Please provide two different forms of identification. You can upload images or PDF files.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-4">
-                    <h4 className="font-semibold">First Form of ID</h4>
-                    <div className="space-y-2">
-                      <Label htmlFor="idType1">ID Type</Label>
-                      <Select value={formData.idType1} onValueChange={(value) => handleInputChange("idType1", value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select ID type" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60">
-                          {idTypes.map((type) => (
-                            <SelectItem key={type} value={type}>
-                              {type}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <FileUploadComponent
-                      field="idFile1"
-                      label="Upload First ID Document"
-                      currentFile={formData.idFile1}
-                    />
-                  </div>
-
-                  <div className="space-y-4">
-                    <h4 className="font-semibold">Second Form of ID</h4>
-                    <div className="space-y-2">
-                      <Label htmlFor="idType2">ID Type</Label>
-                      <Select value={formData.idType2} onValueChange={(value) => handleInputChange("idType2", value)}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select ID type" />
-                        </SelectTrigger>
-                        <SelectContent className="max-h-60">
-                          {idTypes
-                            .filter((type) => type !== formData.idType1)
-                            .map((type) => (
-                              <SelectItem key={type} value={type}>
-                                {type}
-                              </SelectItem>
-                            ))}
-                        </SelectContent>
-                      </Select>
-                    </div>
-                    <FileUploadComponent
-                      field="idFile2"
-                      label="Upload Second ID Document"
-                      currentFile={formData.idFile2}
-                    />
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Step 3: Driver License */}
-            {currentStep === 3 && (
               <div className="space-y-6">
                 <div className="bg-yellow-50 p-4 rounded-lg">
                   <h4 className="font-semibold text-yellow-900 mb-2">Driver License Upload</h4>
@@ -801,7 +600,71 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </div>
             )}
 
-            {/* Step 4: Tax & Super */}
+            {/* Step 3: Identity Documents - VALIDATION REQUIRED */}
+            {currentStep === 3 && (
+              <div className="space-y-6">
+                <div className="bg-blue-50 p-4 rounded-lg">
+                  <h4 className="font-semibold text-blue-900 mb-2">Required: Two Forms of ID *</h4>
+                  <p className="text-sm text-blue-800">
+                    Please provide two different forms of identification. You can upload images or PDF files.
+                  </p>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div className="space-y-4">
+                    <h4 className="font-semibold">First Form of ID *</h4>
+                    <div className="space-y-2">
+                      <Label htmlFor="idType1">ID Type *</Label>
+                      <Select value={formData.idType1} onValueChange={(value) => handleInputChange("idType1", value)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select ID type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {idTypes.map((type) => (
+                            <SelectItem key={type} value={type}>
+                              {type}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <FileUploadComponent
+                      field="idFile1"
+                      label="Upload First ID Document *"
+                      currentFile={formData.idFile1}
+                    />
+                  </div>
+
+                  <div className="space-y-4">
+                    <h4 className="font-semibold">Second Form of ID *</h4>
+                    <div className="space-y-2">
+                      <Label htmlFor="idType2">ID Type *</Label>
+                      <Select value={formData.idType2} onValueChange={(value) => handleInputChange("idType2", value)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select ID type" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {idTypes
+                            .filter((type) => type !== formData.idType1)
+                            .map((type) => (
+                              <SelectItem key={type} value={type}>
+                                {type}
+                              </SelectItem>
+                            ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                    <FileUploadComponent
+                      field="idFile2"
+                      label="Upload Second ID Document *"
+                      currentFile={formData.idFile2}
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Step 4: Tax & Super - VALIDATION REQUIRED */}
             {currentStep === 4 && (
               <div className="space-y-6">
                 <div className="bg-green-50 p-4 rounded-lg">
@@ -853,7 +716,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </div>
             )}
 
-            {/* Step 5: Bank Details */}
+            {/* Step 5: Bank Details - VALIDATION REQUIRED */}
             {currentStep === 5 && (
               <div className="space-y-6">
                 <div className="bg-blue-50 p-4 rounded-lg">
@@ -915,7 +778,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </div>
             )}
 
-            {/* Step 6: Final Details */}
+            {/* Step 6: Final Details - VALIDATION REQUIRED */}
             {currentStep === 6 && (
               <div className="space-y-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1011,7 +874,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </Button>
 
               {currentStep < totalSteps ? (
-                <Button onClick={nextStep}>Next & Save</Button>
+                <Button onClick={nextStep}>Next</Button>
               ) : (
                 <Button onClick={handleSubmit} className="bg-green-600 hover:bg-green-700">
                   Submit Application
