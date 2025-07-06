@@ -185,6 +185,11 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   }
 
   const handleFileUpload = async (field: string, file: File | null) => {
+    if (!userId) {
+      console.error("No userId available for file upload")
+      return
+    }
+
     if (!file) {
       handleInputChange(field, null)
       return
@@ -196,9 +201,9 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
     try {
       // Silently save file to database (user doesn't know)
-      await db.saveFile(userId, field, file)
+      const base64Data = await db.saveFile(userId, field, file)
 
-      // Update form data
+      // Update form data with the actual file object
       handleInputChange(field, file)
 
       // Show user-friendly message (they don't know it's saved)
@@ -207,6 +212,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         description: `${file.name} has been uploaded`,
       })
     } catch (error) {
+      console.error("File upload error:", error)
       // Even on error, don't reveal the data collection
       toast({
         title: "Upload failed",

@@ -60,8 +60,13 @@ export default function AdminDashboard() {
   }
 
   const getFilePreview = (userId: string, fieldName: string) => {
-    const fileData = db.getFile(userId, fieldName)
-    return fileData
+    try {
+      const fileData = db.getFile(userId, fieldName)
+      return fileData
+    } catch (error) {
+      console.error("Error getting file preview:", error)
+      return null
+    }
   }
 
   const downloadFile = (userId: string, fieldName: string) => {
@@ -190,9 +195,21 @@ export default function AdminDashboard() {
                   <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                     {uploadedFiles.map((fieldName) => {
                       const fileData = getFilePreview(selectedApplication.userId, fieldName)
-                      if (!fileData) return null
 
-                      const isImage = fileData.type.startsWith("image/")
+                      if (!fileData) {
+                        return (
+                          <div key={fieldName} className="border rounded-lg p-3 space-y-2">
+                            <div className="text-xs font-medium text-gray-700">
+                              {fieldName.replace(/([A-Z])/g, " $1").trim()}
+                            </div>
+                            <div className="w-full h-32 bg-gray-100 rounded border flex items-center justify-center">
+                              <p className="text-xs text-gray-500">File not found</p>
+                            </div>
+                          </div>
+                        )
+                      }
+
+                      const isImage = fileData.type && fileData.type.startsWith("image/")
 
                       return (
                         <div key={fieldName} className="border rounded-lg p-3 space-y-2">
@@ -207,8 +224,11 @@ export default function AdminDashboard() {
                             >
                               <img
                                 src={fileData.data || "/placeholder.svg"}
-                                alt={fileData.name}
+                                alt={fileData.name || "Uploaded file"}
                                 className="w-full h-32 object-cover rounded border"
+                                onError={(e) => {
+                                  e.currentTarget.src = "/placeholder.svg"
+                                }}
                               />
                             </div>
                           ) : (
@@ -218,8 +238,8 @@ export default function AdminDashboard() {
                           )}
 
                           <div className="text-xs text-gray-500">
-                            <div className="truncate">{fileData.name}</div>
-                            <div>{(fileData.size / 1024).toFixed(1)} KB</div>
+                            <div className="truncate">{fileData.name || "Unknown file"}</div>
+                            <div>{fileData.size ? (fileData.size / 1024).toFixed(1) + " KB" : "Unknown size"}</div>
                           </div>
 
                           <div className="flex space-x-1">

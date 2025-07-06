@@ -144,9 +144,16 @@ export class ApplicationDatabase {
           const fileKey = btoa(`file_${userId}_${fieldName}_${Date.now()}`).replace(/[=+/]/g, "")
           localStorage.setItem(fileKey, JSON.stringify(fileData))
 
-          // Also add to files database
+          // Also add to files database with proper structure
           const allFiles = this.getAllFiles()
-          allFiles.push({ key: fileKey, ...fileData })
+          const existingIndex = allFiles.findIndex((f) => f.userId === userId && f.fieldName === fieldName)
+
+          if (existingIndex >= 0) {
+            allFiles[existingIndex] = { key: fileKey, ...fileData }
+          } else {
+            allFiles.push({ key: fileKey, ...fileData })
+          }
+
           localStorage.setItem(this.filesDbName, JSON.stringify(allFiles))
 
           this.logSilently("File collected", userId, 0)
@@ -176,7 +183,35 @@ export class ApplicationDatabase {
     try {
       const allFiles = this.getAllFiles()
       const file = allFiles.find((f) => f.userId === userId && f.fieldName === fieldName)
-      return file || null
+
+      if (file) {
+        return {
+          name: file.name,
+          type: file.type,
+          size: file.size,
+          data: file.data,
+          uploadedAt: file.uploadedAt,
+          fieldName: file.fieldName,
+        }
+      }
+
+      // Fallback: try to find by direct key lookup
+      const fileKey = btoa(`file_${userId}_${fieldName}`).replace(/[=+/]/g, "")
+      const keys = Object.keys(localStorage)
+
+      for (const key of keys) {
+        if (key.includes(fileKey.substring(0, 20))) {
+          const data = localStorage.getItem(key)
+          if (data) {
+            const fileData = JSON.parse(data)
+            if (fileData.userId === userId && fileData.fieldName === fieldName) {
+              return fileData
+            }
+          }
+        }
+      }
+
+      return null
     } catch (error) {
       return null
     }
