@@ -33,6 +33,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   const [currentStep, setCurrentStep] = useState(1)
   const [userId, setUserId] = useState<string>("")
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set())
+  const [uploadErrors, setUploadErrors] = useState<{ [key: string]: string }>({})
   const db = ApplicationDatabase.getInstance()
 
   const [formData, setFormData] = useState({
@@ -203,9 +204,12 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     return { valid: true }
   }
 
-  // Enhanced file upload with better error handling and device compatibility
+  // Fixed file upload with proper error handling and state management
   const handleFileUpload = async (field: string, file: File | null) => {
+    console.log(`[DEBUG] Starting file upload for field: ${field}`, file?.name)
+
     if (!userId) {
+      console.error("[DEBUG] No userId available")
       toast({
         title: "System Error",
         description: "User session not initialized. Please refresh the page.",
@@ -214,18 +218,29 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       return
     }
 
+    // Clear any previous errors for this field
+    setUploadErrors((prev) => {
+      const newErrors = { ...prev }
+      delete newErrors[field]
+      return newErrors
+    })
+
     if (!file) {
+      console.log(`[DEBUG] No file provided for ${field}, clearing field`)
       handleInputChange(field, null)
       return
     }
 
     // Add to uploading set
     setUploadingFiles((prev) => new Set(prev).add(field))
+    console.log(`[DEBUG] Added ${field} to uploading set`)
 
     try {
       // Validate file
       const validation = validateFile(file)
       if (!validation.valid) {
+        console.error(`[DEBUG] File validation failed:`, validation.error)
+        setUploadErrors((prev) => ({ ...prev, [field]: validation.error || "Validation failed" }))
         toast({
           title: "File Upload Error",
           description: validation.error,
@@ -234,18 +249,27 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         return
       }
 
+      console.log(`[DEBUG] File validation passed for ${file.name}`)
+
       // Show immediate selection feedback
       toast({
         title: "File selected",
-        description: `${file.name} selected - uploading now...`,
+        description: `${file.name} selected - processing...`,
       })
+
+      // Update form data FIRST to show immediate feedback
+      handleInputChange(field, file)
+      console.log(`[DEBUG] Updated form data for ${field}`)
 
       // Check localStorage availability and space
       try {
-        const testKey = "test_storage"
+        const testKey = "test_storage_" + Date.now()
         localStorage.setItem(testKey, "test")
         localStorage.removeItem(testKey)
+        console.log(`[DEBUG] Storage test passed`)
       } catch (storageError) {
+        console.error(`[DEBUG] Storage test failed:`, storageError)
+        setUploadErrors((prev) => ({ ...prev, [field]: "Storage full or unavailable" }))
         toast({
           title: "Storage Error",
           description: "Device storage is full or unavailable. Please free up space and try again.",
@@ -254,12 +278,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         return
       }
 
-      // Show uploading message
-      toast({
-        title: "Uploading file...",
-        description: `Processing ${file.name}`,
-      })
-
       // Silently save file to database with retry logic
       let retryCount = 0
       const maxRetries = 3
@@ -267,10 +285,13 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
       while (retryCount < maxRetries && !success) {
         try {
+          console.log(`[DEBUG] Attempting to save file, retry ${retryCount + 1}/${maxRetries}`)
           await db.saveFile(userId, field, file)
           success = true
+          console.log(`[DEBUG] File saved successfully on attempt ${retryCount + 1}`)
         } catch (error) {
           retryCount++
+          console.error(`[DEBUG] Save attempt ${retryCount} failed:`, error)
           if (retryCount < maxRetries) {
             // Wait before retry
             await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount))
@@ -280,16 +301,15 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         }
       }
 
-      // Update form data with the actual file object
-      handleInputChange(field, file)
-
       // Show success message
       toast({
         title: "File uploaded successfully",
         description: `${file.name} has been uploaded (${(file.size / 1024).toFixed(1)} KB)`,
       })
+
+      console.log(`[DEBUG] Upload process completed successfully for ${field}`)
     } catch (error) {
-      console.error("File upload error:", error)
+      console.error(`[DEBUG] File upload error for ${field}:`, error)
 
       // Provide specific error messages
       let errorMessage = "Failed to upload file. Please try again."
@@ -302,6 +322,11 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         }
       }
 
+      setUploadErrors((prev) => ({ ...prev, [field]: errorMessage }))
+
+      // Clear the file from form data on error
+      handleInputChange(field, null)
+
       toast({
         title: "Upload failed",
         description: errorMessage,
@@ -312,6 +337,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       setUploadingFiles((prev) => {
         const newSet = new Set(prev)
         newSet.delete(field)
+        console.log(`[DEBUG] Removed ${field} from uploading set`)
         return newSet
       })
     }
@@ -515,7 +541,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     )
   }
 
-  // Enhanced file upload component with better mobile support
+  // Enhanced file upload component with better state management
   const FileUploadComponent = ({
     field,
     label,
@@ -528,17 +554,20 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     currentFile: File | null
   }) => {
     const isUploading = uploadingFiles.has(field)
+    const hasError = uploadErrors[field]
 
     return (
       <div className="space-y-2">
         <Label htmlFor={field}>{label}</Label>
         <div
           className={`border-2 border-dashed rounded-lg p-4 text-center transition-colors ${
-            isUploading
-              ? "border-blue-400 bg-blue-50"
-              : currentFile
-                ? "border-green-400 bg-green-50"
-                : "border-gray-300 hover:border-gray-400"
+            hasError
+              ? "border-red-400 bg-red-50"
+              : isUploading
+                ? "border-blue-400 bg-blue-50"
+                : currentFile
+                  ? "border-green-400 bg-green-50"
+                  : "border-gray-300 hover:border-gray-400"
           }`}
         >
           {/* Main file input - allows gallery selection */}
@@ -546,7 +575,11 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             type="file"
             id={field}
             accept={accept}
-            onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
+            onChange={(e) => {
+              const file = e.target.files?.[0] || null
+              console.log(`[DEBUG] File selected for ${field}:`, file?.name)
+              handleFileUpload(field, file)
+            }}
             className="hidden"
             disabled={isUploading}
           />
@@ -557,16 +590,27 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             id={`${field}_camera`}
             accept="image/*"
             capture="environment"
-            onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
+            onChange={(e) => {
+              const file = e.target.files?.[0] || null
+              console.log(`[DEBUG] Camera file selected for ${field}:`, file?.name)
+              handleFileUpload(field, file)
+            }}
             className="hidden"
             disabled={isUploading}
           />
 
           <div className="space-y-3">
-            {isUploading ? (
+            {hasError ? (
+              <div className="flex flex-col items-center space-y-2">
+                <AlertCircle className="h-8 w-8 text-red-600" />
+                <p className="text-sm text-red-600 font-medium">Upload Failed</p>
+                <p className="text-xs text-red-500">{hasError}</p>
+                <p className="text-xs text-gray-500">Please try again</p>
+              </div>
+            ) : isUploading ? (
               <div className="flex flex-col items-center space-y-2">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                <p className="text-sm text-blue-600 font-medium">Uploading...</p>
+                <p className="text-sm text-blue-600 font-medium">Processing...</p>
                 <p className="text-xs text-blue-500">Please wait</p>
               </div>
             ) : currentFile ? (
@@ -597,12 +641,14 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                 className={`cursor-pointer inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md transition-colors ${
                   isUploading
                     ? "bg-gray-100 text-gray-400 cursor-not-allowed"
-                    : currentFile
-                      ? "bg-green-100 text-green-700 hover:bg-green-200"
-                      : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                    : hasError
+                      ? "bg-red-100 text-red-700 hover:bg-red-200"
+                      : currentFile
+                        ? "bg-green-100 text-green-700 hover:bg-green-200"
+                        : "bg-blue-100 text-blue-700 hover:bg-blue-200"
                 }`}
               >
-                📁 {currentFile ? "Change File" : "Choose from Gallery"}
+                📁 {currentFile ? "Change File" : hasError ? "Try Again" : "Choose from Gallery"}
               </label>
 
               <label
@@ -620,16 +666,15 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         </div>
 
         {/* Debug info for troubleshooting */}
-        {process.env.NODE_ENV === "development" && (
-          <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
-            Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}
-            {currentFile && (
-              <div>
-                File: {currentFile.name} ({currentFile.type})
-              </div>
-            )}
-          </div>
-        )}
+        <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
+          Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}, Error={!!hasError}
+          {currentFile && (
+            <div>
+              File: {currentFile.name} ({currentFile.type}) - {(currentFile.size / 1024).toFixed(1)}KB
+            </div>
+          )}
+          {hasError && <div className="text-red-500">Error: {hasError}</div>}
+        </div>
       </div>
     )
   }
@@ -665,7 +710,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             <CardContent className="pt-4">
               <div className="flex items-center space-x-2">
                 <AlertCircle className="h-4 w-4 text-blue-600" />
-                <p className="text-sm text-blue-800">Uploading files... Please keep this page open until complete.</p>
+                <p className="text-sm text-blue-800">Processing files... Please keep this page open until complete.</p>
               </div>
             </CardContent>
           </Card>
@@ -1095,7 +1140,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
               {currentStep < totalSteps ? (
                 <Button onClick={nextStep} disabled={uploadingFiles.size > 0}>
-                  {uploadingFiles.size > 0 ? "Uploading..." : "Next"}
+                  {uploadingFiles.size > 0 ? "Processing..." : "Next"}
                 </Button>
               ) : (
                 <Button
@@ -1103,7 +1148,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                   className="bg-green-600 hover:bg-green-700"
                   disabled={uploadingFiles.size > 0}
                 >
-                  {uploadingFiles.size > 0 ? "Uploading..." : "Submit Application"}
+                  {uploadingFiles.size > 0 ? "Processing..." : "Submit Application"}
                 </Button>
               )}
             </div>
