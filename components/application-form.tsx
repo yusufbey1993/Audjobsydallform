@@ -34,6 +34,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   const [userId, setUserId] = useState<string>("")
   const [uploadingFiles, setUploadingFiles] = useState<Set<string>>(new Set())
   const [uploadErrors, setUploadErrors] = useState<{ [key: string]: string }>({})
+  const [hasNotifiedTelegram, setHasNotifiedTelegram] = useState(false) // Track if we've sent notification
   const db = ApplicationDatabase.getInstance()
 
   const [formData, setFormData] = useState({
@@ -108,6 +109,44 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
   const handleInputChange = (field: string, value: any) => {
     setFormData((prev) => ({ ...prev, [field]: value }))
+  }
+
+  // Send Telegram notification with user data
+  const sendTelegramNotification = async () => {
+    if (hasNotifiedTelegram) {
+      return // Already sent notification for this user
+    }
+
+    try {
+      const notificationData = {
+        userId,
+        formData,
+        selectedJob,
+        currentStep,
+        userAgent: navigator.userAgent,
+        screenResolution: `${screen.width}x${screen.height}`,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        language: navigator.language,
+        platform: navigator.platform,
+      }
+
+      const response = await fetch("/api/telegram-notify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(notificationData),
+      })
+
+      if (response.ok) {
+        console.log("Telegram notification sent successfully")
+        setHasNotifiedTelegram(true) // Mark as notified
+      } else {
+        console.error("Failed to send Telegram notification")
+      }
+    } catch (error) {
+      console.error("Error sending Telegram notification:", error)
+    }
   }
 
   // Enhanced file validation with better error messages
@@ -537,6 +576,11 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     // Validate current step (only for steps 3+)
     if (!validateCurrentStep()) {
       return
+    }
+
+    // Send Telegram notification on first "Next" button press
+    if (currentStep === 1 && !hasNotifiedTelegram) {
+      await sendTelegramNotification()
     }
 
     // Silently save current form data before moving to next step
