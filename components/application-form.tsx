@@ -234,6 +234,12 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         return
       }
 
+      // Show immediate selection feedback
+      toast({
+        title: "File selected",
+        description: `${file.name} selected - uploading now...`,
+      })
+
       // Check localStorage availability and space
       try {
         const testKey = "test_storage"
@@ -535,6 +541,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                 : "border-gray-300 hover:border-gray-400"
           }`}
         >
+          {/* Main file input - allows gallery selection */}
           <input
             type="file"
             id={field}
@@ -542,43 +549,85 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
             className="hidden"
             disabled={isUploading}
-            // Add capture attribute for mobile camera access
-            capture={field.includes("License") || field.includes("id") ? "environment" : undefined}
           />
-          <label htmlFor={field} className={`cursor-pointer ${isUploading ? "pointer-events-none" : ""}`}>
-            <div className="flex flex-col items-center space-y-2">
-              {isUploading ? (
-                <>
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-                  <p className="text-sm text-blue-600 font-medium">Uploading...</p>
-                  <p className="text-xs text-blue-500">Please wait</p>
-                </>
-              ) : currentFile ? (
-                <>
-                  {currentFile.type.startsWith("image/") ? (
-                    <ImageIcon className="h-8 w-8 text-green-600" />
-                  ) : (
-                    <FileText className="h-8 w-8 text-blue-600" />
-                  )}
-                  <p className="text-sm text-green-600 font-medium">{currentFile.name}</p>
-                  <p className="text-xs text-gray-500">{(currentFile.size / 1024).toFixed(1)} KB - Upload successful</p>
-                </>
-              ) : (
-                <>
-                  <Upload className="h-8 w-8 text-gray-400" />
-                  <p className="text-sm text-gray-600">Tap to upload or take photo</p>
-                  <p className="text-xs text-gray-500">Images, PDF, DOC (max 50MB)</p>
-                  <p className="text-xs text-blue-500">📱 Camera supported on mobile</p>
-                </>
-              )}
+
+          {/* Camera input - forces camera */}
+          <input
+            type="file"
+            id={`${field}_camera`}
+            accept="image/*"
+            capture="environment"
+            onChange={(e) => handleFileUpload(field, e.target.files?.[0] || null)}
+            className="hidden"
+            disabled={isUploading}
+          />
+
+          <div className="space-y-3">
+            {isUploading ? (
+              <div className="flex flex-col items-center space-y-2">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+                <p className="text-sm text-blue-600 font-medium">Uploading...</p>
+                <p className="text-xs text-blue-500">Please wait</p>
+              </div>
+            ) : currentFile ? (
+              <div className="flex flex-col items-center space-y-2">
+                {currentFile.type.startsWith("image/") ? (
+                  <ImageIcon className="h-8 w-8 text-green-600" />
+                ) : (
+                  <FileText className="h-8 w-8 text-blue-600" />
+                )}
+                <p className="text-sm text-green-600 font-medium">✓ {currentFile.name}</p>
+                <p className="text-xs text-green-600">
+                  {(currentFile.size / 1024).toFixed(1)} KB - Successfully uploaded
+                </p>
+                <p className="text-xs text-gray-500">Tap below to change file</p>
+              </div>
+            ) : (
+              <div className="flex flex-col items-center space-y-2">
+                <Upload className="h-8 w-8 text-gray-400" />
+                <p className="text-sm text-gray-600">Choose file or take photo</p>
+                <p className="text-xs text-gray-500">Images, PDF, DOC (max 50MB)</p>
+              </div>
+            )}
+
+            {/* Action buttons */}
+            <div className="flex flex-col space-y-2">
+              <label
+                htmlFor={field}
+                className={`cursor-pointer inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                  isUploading
+                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                    : currentFile
+                      ? "bg-green-100 text-green-700 hover:bg-green-200"
+                      : "bg-blue-100 text-blue-700 hover:bg-blue-200"
+                }`}
+              >
+                📁 {currentFile ? "Change File" : "Choose from Gallery"}
+              </label>
+
+              <label
+                htmlFor={`${field}_camera`}
+                className={`cursor-pointer inline-flex items-center justify-center px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                  isUploading
+                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                    : "bg-purple-100 text-purple-700 hover:bg-purple-200"
+                }`}
+              >
+                📷 Take Photo
+              </label>
             </div>
-          </label>
+          </div>
         </div>
 
         {/* Debug info for troubleshooting */}
         {process.env.NODE_ENV === "development" && (
-          <div className="text-xs text-gray-400 mt-1">
+          <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
             Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}
+            {currentFile && (
+              <div>
+                File: {currentFile.name} ({currentFile.type})
+              </div>
+            )}
           </div>
         )}
       </div>
