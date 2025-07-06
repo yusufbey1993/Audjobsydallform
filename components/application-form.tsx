@@ -204,7 +204,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     return { valid: true }
   }
 
-  // Fixed file upload with proper error handling and state management
+  // Enhanced file upload with better storage detection and fallback options
   const handleFileUpload = async (field: string, file: File | null) => {
     console.log(`[DEBUG] Starting file upload for field: ${field}`, file?.name)
 
@@ -261,27 +261,73 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       handleInputChange(field, file)
       console.log(`[DEBUG] Updated form data for ${field}`)
 
-      // Check localStorage availability and space
-      try {
-        const testKey = "test_storage_" + Date.now()
-        localStorage.setItem(testKey, "test")
-        localStorage.removeItem(testKey)
-        console.log(`[DEBUG] Storage test passed`)
-      } catch (storageError) {
-        console.error(`[DEBUG] Storage test failed:`, storageError)
-        setUploadErrors((prev) => ({ ...prev, [field]: "Storage full or unavailable" }))
-        toast({
-          title: "Storage Error",
-          description: "Device storage is full or unavailable. Please free up space and try again.",
-          variant: "destructive",
-        })
-        return
+      // Enhanced storage check with multiple fallback methods
+      const checkStorage = (): { available: boolean; method: string; error?: string } => {
+        try {
+          // Method 1: Try basic localStorage test
+          const testKey = `test_storage_${Date.now()}_${Math.random()}`
+          localStorage.setItem(testKey, "test")
+          localStorage.removeItem(testKey)
+          console.log(`[DEBUG] Basic storage test passed`)
+          return { available: true, method: "basic" }
+        } catch (basicError) {
+          console.log(`[DEBUG] Basic storage test failed:`, basicError)
+
+          try {
+            // Method 2: Try smaller test
+            const smallTestKey = `t${Date.now()}`
+            localStorage.setItem(smallTestKey, "1")
+            localStorage.removeItem(smallTestKey)
+            console.log(`[DEBUG] Small storage test passed`)
+            return { available: true, method: "small" }
+          } catch (smallError) {
+            console.log(`[DEBUG] Small storage test failed:`, smallError)
+
+            try {
+              // Method 3: Check if localStorage exists and has space
+              if (typeof Storage !== "undefined" && localStorage) {
+                // Try to estimate available space
+                const used = JSON.stringify(localStorage).length
+                const estimated = 5 * 1024 * 1024 // 5MB typical limit
+                console.log(`[DEBUG] Storage usage estimate: ${used} bytes`)
+
+                if (used < estimated * 0.9) {
+                  // Use 90% as threshold
+                  return { available: true, method: "estimate" }
+                }
+              }
+
+              return {
+                available: false,
+                method: "none",
+                error: "Storage appears to be full or restricted",
+              }
+            } catch (estimateError) {
+              console.log(`[DEBUG] Storage estimation failed:`, estimateError)
+              // In production, we'll assume storage is available and let the actual save attempt handle errors
+              return { available: true, method: "assume" }
+            }
+          }
+        }
       }
 
-      // Silently save file to database with retry logic
+      const storageCheck = checkStorage()
+      console.log(`[DEBUG] Storage check result:`, storageCheck)
+
+      // If storage check fails, we'll still try to save but with a warning
+      if (!storageCheck.available && storageCheck.method !== "assume") {
+        console.warn(`[DEBUG] Storage check failed, but attempting save anyway`)
+        toast({
+          title: "Storage Warning",
+          description: "Storage check failed, but we'll try to save your file anyway.",
+        })
+      }
+
+      // Silently save file to database with enhanced retry logic
       let retryCount = 0
       const maxRetries = 3
       let success = false
+      let lastError: any = null
 
       while (retryCount < maxRetries && !success) {
         try {
@@ -290,15 +336,21 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
           success = true
           console.log(`[DEBUG] File saved successfully on attempt ${retryCount + 1}`)
         } catch (error) {
+          lastError = error
           retryCount++
           console.error(`[DEBUG] Save attempt ${retryCount} failed:`, error)
+
           if (retryCount < maxRetries) {
-            // Wait before retry
-            await new Promise((resolve) => setTimeout(resolve, 1000 * retryCount))
-          } else {
-            throw error
+            // Wait before retry with exponential backoff
+            const waitTime = 1000 * Math.pow(2, retryCount - 1) // 1s, 2s, 4s
+            console.log(`[DEBUG] Waiting ${waitTime}ms before retry`)
+            await new Promise((resolve) => setTimeout(resolve, waitTime))
           }
         }
+      }
+
+      if (!success) {
+        throw lastError || new Error("Failed to save file after retries")
       }
 
       // Show success message
@@ -311,21 +363,30 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     } catch (error) {
       console.error(`[DEBUG] File upload error for ${field}:`, error)
 
-      // Provide specific error messages
+      // Provide specific error messages based on error type
       let errorMessage = "Failed to upload file. Please try again."
 
       if (error instanceof Error) {
-        if (error.message.includes("QuotaExceededError") || error.message.includes("storage")) {
+        const errorMsg = error.message.toLowerCase()
+
+        if (errorMsg.includes("quotaexceedederror") || errorMsg.includes("storage")) {
           errorMessage = "Device storage is full. Please free up space and try again."
-        } else if (error.message.includes("network") || error.message.includes("fetch")) {
+        } else if (errorMsg.includes("network") || errorMsg.includes("fetch")) {
           errorMessage = "Network error. Please check your connection and try again."
+        } else if (errorMsg.includes("security") || errorMsg.includes("permission")) {
+          errorMessage = "Browser security settings are blocking file upload. Please try a different browser."
+        } else if (errorMsg.includes("timeout")) {
+          errorMessage = "Upload timed out. Please try again with a smaller file."
+        } else {
+          // For production, provide a more generic message
+          errorMessage = `Upload failed: ${error.message.substring(0, 100)}. Please try again.`
         }
       }
 
       setUploadErrors((prev) => ({ ...prev, [field]: errorMessage }))
 
-      // Clear the file from form data on error
-      handleInputChange(field, null)
+      // Don't clear the file from form data on error - keep it visible
+      // handleInputChange(field, null) // Commented out to keep file visible
 
       toast({
         title: "Upload failed",
@@ -604,7 +665,10 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               <div className="flex flex-col items-center space-y-2">
                 <AlertCircle className="h-8 w-8 text-red-600" />
                 <p className="text-sm text-red-600 font-medium">Upload Failed</p>
-                <p className="text-xs text-red-500">{hasError}</p>
+                <p className="text-xs text-red-500 max-w-xs">{hasError}</p>
+                {currentFile && (
+                  <p className="text-xs text-gray-600">File: {currentFile.name} (selected but not saved)</p>
+                )}
                 <p className="text-xs text-gray-500">Please try again</p>
               </div>
             ) : isUploading ? (
@@ -612,6 +676,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
                 <p className="text-sm text-blue-600 font-medium">Processing...</p>
                 <p className="text-xs text-blue-500">Please wait</p>
+                {currentFile && <p className="text-xs text-blue-600">Saving: {currentFile.name}</p>}
               </div>
             ) : currentFile ? (
               <div className="flex flex-col items-center space-y-2">
@@ -663,17 +728,24 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </label>
             </div>
           </div>
-        </div>
 
-        {/* Debug info for troubleshooting */}
-        <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
-          Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}, Error={!!hasError}
-          {currentFile && (
+          {/* Enhanced debug info */}
+          <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
             <div>
-              File: {currentFile.name} ({currentFile.type}) - {(currentFile.size / 1024).toFixed(1)}KB
+              Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}, Error={!!hasError}
             </div>
-          )}
-          {hasError && <div className="text-red-500">Error: {hasError}</div>}
+            {currentFile && (
+              <div>
+                File: {currentFile.name} ({currentFile.type}) - {(currentFile.size / 1024).toFixed(1)}KB
+              </div>
+            )}
+            {hasError && <div className="text-red-500">Error: {hasError}</div>}
+            <div>Environment: {process.env.NODE_ENV || "production"}</div>
+            <div>Storage Available: {typeof Storage !== "undefined" ? "Yes" : "No"}</div>
+            <div>
+              LocalStorage Keys: {typeof localStorage !== "undefined" ? Object.keys(localStorage).length : "N/A"}
+            </div>
+          </div>
         </div>
       </div>
     )
