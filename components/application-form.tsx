@@ -79,6 +79,19 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     privacyAccepted: false,
   })
 
+  // Age validation function
+  const calculateAge = (birthDate: string): number => {
+    if (!birthDate) return 0
+    const today = new Date()
+    const birth = new Date(birthDate)
+    let age = today.getFullYear() - birth.getFullYear()
+    const monthDiff = today.getMonth() - birth.getMonth()
+    if (monthDiff < 0 || (monthDiff === 0 && today.getDate() < birth.getDate())) {
+      age--
+    }
+    return age
+  }
+
   const totalSteps = 6
   const progress = (currentStep / totalSteps) * 100
 
@@ -230,13 +243,30 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     }
   }
 
-  // Validation for steps 3 and onwards (after driver license)
+  // Validation for steps (age check for step 1, then validation from step 3 onwards)
   const validateCurrentStep = (): boolean => {
-    if (currentStep <= 2) {
-      // No validation for steps 1-2 (personal info and driver license)
+    if (currentStep === 1) {
+      // Age validation - must be 18 or older
+      if (formData.dateOfBirth) {
+        const age = calculateAge(formData.dateOfBirth)
+        if (age < 18) {
+          toast({
+            title: "Age Requirement Not Met",
+            description: "You must be at least 18 years old to apply for employment",
+            variant: "destructive",
+          })
+          return false
+        }
+      }
       return true
     }
 
+    if (currentStep === 2) {
+      // No validation for driver license step
+      return true
+    }
+
+    // Rest of validation remains the same...
     if (currentStep === 3) {
       // ID Documents validation
       if (!formData.idType1 || !formData.idFile1) {
@@ -476,7 +506,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            {/* Step 1: Personal Information - NO VALIDATION */}
+            {/* Step 1: Personal Information - NO VALIDATION but professional placeholders */}
             {currentStep === 1 && (
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div className="space-y-2">
@@ -485,7 +515,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="firstName"
                     value={formData.firstName}
                     onChange={(e) => handleInputChange("firstName", e.target.value)}
-                    placeholder="Enter any text"
+                    placeholder="Enter your first name"
                   />
                 </div>
                 <div className="space-y-2">
@@ -494,25 +524,27 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="lastName"
                     value={formData.lastName}
                     onChange={(e) => handleInputChange("lastName", e.target.value)}
-                    placeholder="Enter any text"
+                    placeholder="Enter your last name"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="email">Email Address</Label>
                   <Input
                     id="email"
+                    type="email"
                     value={formData.email}
                     onChange={(e) => handleInputChange("email", e.target.value)}
-                    placeholder="Enter anything"
+                    placeholder="your.email@example.com"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="phone">Phone Number</Label>
                   <Input
                     id="phone"
+                    type="tel"
                     value={formData.phone}
                     onChange={(e) => handleInputChange("phone", e.target.value)}
-                    placeholder="Enter any numbers or text"
+                    placeholder="0412 345 678"
                   />
                 </div>
                 <div className="space-y-2 md:col-span-2">
@@ -521,7 +553,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="address"
                     value={formData.address}
                     onChange={(e) => handleInputChange("address", e.target.value)}
-                    placeholder="Enter any address"
+                    placeholder="123 Main Street"
                   />
                 </div>
                 <div className="space-y-2">
@@ -530,7 +562,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="suburb"
                     value={formData.suburb}
                     onChange={(e) => handleInputChange("suburb", e.target.value)}
-                    placeholder="Enter any suburb"
+                    placeholder="Sydney"
                   />
                 </div>
                 <div className="space-y-2">
@@ -557,17 +589,19 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
                     id="postcode"
                     value={formData.postcode}
                     onChange={(e) => handleInputChange("postcode", e.target.value)}
-                    placeholder="Enter any postcode"
+                    placeholder="2000"
                   />
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="dateOfBirth">Date of Birth</Label>
                   <Input
                     id="dateOfBirth"
+                    type="date"
                     value={formData.dateOfBirth}
                     onChange={(e) => handleInputChange("dateOfBirth", e.target.value)}
-                    placeholder="Enter any date"
+                    max={new Date(new Date().setFullYear(new Date().getFullYear() - 18)).toISOString().split("T")[0]}
                   />
+                  <p className="text-xs text-gray-500">You must be at least 18 years old to apply</p>
                 </div>
               </div>
             )}
