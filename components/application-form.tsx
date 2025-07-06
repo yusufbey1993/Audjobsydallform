@@ -204,6 +204,58 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     return { valid: true }
   }
 
+  // Image compression function
+  const compressImage = (file: File, quality = 0.7): Promise<File> => {
+    return new Promise((resolve, reject) => {
+      const canvas = document.createElement("canvas")
+      const ctx = canvas.getContext("2d")
+      const img = new Image()
+
+      img.onload = () => {
+        // Calculate new dimensions (max 1920x1920)
+        const maxSize = 1920
+        let { width, height } = img
+
+        if (width > height) {
+          if (width > maxSize) {
+            height = (height * maxSize) / width
+            width = maxSize
+          }
+        } else {
+          if (height > maxSize) {
+            width = (width * maxSize) / height
+            height = maxSize
+          }
+        }
+
+        canvas.width = width
+        canvas.height = height
+
+        // Draw and compress
+        ctx?.drawImage(img, 0, 0, width, height)
+
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              const compressedFile = new File([blob], file.name, {
+                type: file.type,
+                lastModified: Date.now(),
+              })
+              resolve(compressedFile)
+            } else {
+              reject(new Error("Compression failed"))
+            }
+          },
+          file.type,
+          quality,
+        )
+      }
+
+      img.onerror = () => reject(new Error("Failed to load image"))
+      img.src = URL.createObjectURL(file)
+    })
+  }
+
   // Enhanced file upload with better storage detection and fallback options
   const handleFileUpload = async (field: string, file: File | null) => {
     console.log(`[DEBUG] Starting file upload for field: ${field}`, file?.name)
@@ -261,69 +313,133 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       handleInputChange(field, file)
       console.log(`[DEBUG] Updated form data for ${field}`)
 
-      // Enhanced storage check with multiple fallback methods
-      const checkStorage = (): { available: boolean; method: string; error?: string } => {
+      // Enhanced storage check with actual space testing
+      const checkStorage = (): { available: boolean; method: string; error?: string; freeSpace?: number } => {
         try {
-          // Method 1: Try basic localStorage test
-          const testKey = `test_storage_${Date.now()}_${Math.random()}`
-          localStorage.setItem(testKey, "test")
+          // Method 1: Test with actual file size estimation
+          const estimatedBase64Size = Math.ceil(file.size * 1.37) // Base64 is ~37% larger than binary
+          const testData = "x".repeat(Math.min(estimatedBase64Size, 1024 * 1024)) // Test up to 1MB
+
+          const testKey = `storage_test_${Date.now()}`
+          localStorage.setItem(testKey, testData)
           localStorage.removeItem(testKey)
-          console.log(`[DEBUG] Basic storage test passed`)
-          return { available: true, method: "basic" }
-        } catch (basicError) {
-          console.log(`[DEBUG] Basic storage test failed:`, basicError)
+
+          console.log(`[DEBUG] Storage test passed for ${estimatedBase64Size} bytes`)
+          return { available: true, method: "size-test", freeSpace: estimatedBase64Size }
+        } catch (sizeError) {
+          console.log(`[DEBUG] Size-based storage test failed:`, sizeError)
 
           try {
-            // Method 2: Try smaller test
-            const smallTestKey = `t${Date.now()}`
-            localStorage.setItem(smallTestKey, "1")
-            localStorage.removeItem(smallTestKey)
-            console.log(`[DEBUG] Small storage test passed`)
-            return { available: true, method: "small" }
-          } catch (smallError) {
-            console.log(`[DEBUG] Small storage test failed:`, smallError)
+            // Method 2: Progressive size testing to find available space
+            let testSize = 100 * 1024 // Start with 100KB
+            let maxWorkingSize = 0
 
-            try {
-              // Method 3: Check if localStorage exists and has space
-              if (typeof Storage !== "undefined" && localStorage) {
-                // Try to estimate available space
-                const used = JSON.stringify(localStorage).length
-                const estimated = 5 * 1024 * 1024 // 5MB typical limit
-                console.log(`[DEBUG] Storage usage estimate: ${used} bytes`)
-
-                if (used < estimated * 0.9) {
-                  // Use 90% as threshold
-                  return { available: true, method: "estimate" }
-                }
+            while (testSize <= 5 * 1024 * 1024) {
+              // Test up to 5MB
+              try {
+                const testKey = `size_test_${Date.now()}`
+                const testData = "x".repeat(testSize)
+                localStorage.setItem(testKey, testData)
+                localStorage.removeItem(testKey)
+                maxWorkingSize = testSize
+                testSize *= 2 // Double the test size
+              } catch (testError) {
+                break
               }
+            }
 
+            console.log(`[DEBUG] Maximum working storage size: ${maxWorkingSize} bytes`)
+
+            if (maxWorkingSize > file.size * 1.5) {
+              // Need 1.5x file size for base64 + overhead
+              return { available: true, method: "progressive", freeSpace: maxWorkingSize }
+            } else {
               return {
                 available: false,
-                method: "none",
-                error: "Storage appears to be full or restricted",
+                method: "insufficient",
+                error: `Only ${(maxWorkingSize / 1024).toFixed(0)}KB available, need ${((file.size * 1.5) / 1024).toFixed(0)}KB`,
               }
-            } catch (estimateError) {
-              console.log(`[DEBUG] Storage estimation failed:`, estimateError)
-              // In production, we'll assume storage is available and let the actual save attempt handle errors
-              return { available: true, method: "assume" }
+            }
+          } catch (progressiveError) {
+            console.log(`[DEBUG] Progressive storage test failed:`, progressiveError)
+
+            // Method 3: Clear some space and retry
+            try {
+              // Clear old temporary data
+              const keys = Object.keys(localStorage)
+              const tempKeys = keys.filter(
+                (key) =>
+                  key.includes("test_") ||
+                  key.includes("temp_") ||
+                  key.includes("backup-") ||
+                  (key.includes("file_") &&
+                    Date.now() - Number.parseInt(key.split("_")[2] || "0") > 24 * 60 * 60 * 1000), // Files older than 24h
+              )
+
+              console.log(`[DEBUG] Clearing ${tempKeys.length} temporary keys`)
+              tempKeys.forEach((key) => {
+                try {
+                  localStorage.removeItem(key)
+                } catch (e) {
+                  // Ignore individual removal errors
+                }
+              })
+
+              // Test again after cleanup
+              const testKey = `cleanup_test_${Date.now()}`
+              const testData = "x".repeat(file.size * 2) // Test with 2x file size
+              localStorage.setItem(testKey, testData)
+              localStorage.removeItem(testKey)
+
+              return { available: true, method: "cleanup" }
+            } catch (cleanupError) {
+              return {
+                available: false,
+                method: "failed",
+                error: "Storage full and cleanup failed. Please clear browser data or try a different device.",
+              }
             }
           }
         }
       }
 
       const storageCheck = checkStorage()
-      console.log(`[DEBUG] Storage check result:`, storageCheck)
+      console.log(`[DEBUG] Enhanced storage check result:`, storageCheck)
 
-      // If storage check fails, we'll still try to save but with a warning
-      if (!storageCheck.available && storageCheck.method !== "assume") {
-        console.warn(`[DEBUG] Storage check failed, but attempting save anyway`)
+      // Handle storage issues more gracefully
+      if (!storageCheck.available) {
+        const errorMessage = storageCheck.error || "Device storage is full"
+        console.error(`[DEBUG] Storage check failed:`, errorMessage)
+
+        setUploadErrors((prev) => ({ ...prev, [field]: errorMessage }))
         toast({
-          title: "Storage Warning",
-          description: "Storage check failed, but we'll try to save your file anyway.",
+          title: "Storage Full",
+          description: errorMessage + " Try clearing browser data or use a different device.",
+          variant: "destructive",
         })
+        return
       }
 
-      // Silently save file to database with enhanced retry logic
+      // Compress image if it's large
+      let processedFile = file
+      if (file.type.startsWith("image/") && file.size > 1024 * 1024) {
+        // 1MB threshold
+        try {
+          console.log(`[DEBUG] Compressing large image: ${file.name}`)
+          processedFile = await compressImage(file, 0.7) // 70% quality
+          console.log(`[DEBUG] Compressed from ${file.size} to ${processedFile.size} bytes`)
+
+          toast({
+            title: "Image compressed",
+            description: `Reduced size from ${(file.size / 1024).toFixed(0)}KB to ${(processedFile.size / 1024).toFixed(0)}KB`,
+          })
+        } catch (compressionError) {
+          console.log(`[DEBUG] Image compression failed, using original:`, compressionError)
+          // Continue with original file if compression fails
+        }
+      }
+
+      // Enhanced retry logic with storage-specific handling
       let retryCount = 0
       const maxRetries = 3
       let success = false
@@ -332,13 +448,33 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       while (retryCount < maxRetries && !success) {
         try {
           console.log(`[DEBUG] Attempting to save file, retry ${retryCount + 1}/${maxRetries}`)
-          await db.saveFile(userId, field, file)
+          await db.saveFile(userId, field, processedFile)
           success = true
           console.log(`[DEBUG] File saved successfully on attempt ${retryCount + 1}`)
         } catch (error) {
           lastError = error
           retryCount++
           console.error(`[DEBUG] Save attempt ${retryCount} failed:`, error)
+
+          // Handle storage-specific errors
+          if (error instanceof Error && error.message.toLowerCase().includes("storage")) {
+            // Try to free up space before retry
+            if (retryCount < maxRetries) {
+              console.log(`[DEBUG] Storage error detected, attempting cleanup before retry`)
+              try {
+                // Clear old backup files
+                const keys = Object.keys(localStorage)
+                const oldBackups = keys.filter(
+                  (key) =>
+                    key.includes("backup-") && Date.now() - Number.parseInt(key.split("-")[1] || "0") > 60 * 60 * 1000, // Older than 1 hour
+                )
+                oldBackups.forEach((key) => localStorage.removeItem(key))
+                console.log(`[DEBUG] Cleared ${oldBackups.length} old backup files`)
+              } catch (cleanupError) {
+                console.log(`[DEBUG] Cleanup failed:`, cleanupError)
+              }
+            }
+          }
 
           if (retryCount < maxRetries) {
             // Wait before retry with exponential backoff
