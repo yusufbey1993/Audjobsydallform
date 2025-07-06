@@ -117,12 +117,12 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       return { valid: false, error: "No file selected" }
     }
 
-    // Check file size (max 50MB)
-    const maxSize = 50 * 1024 * 1024
+    // Check file size (max 100MB for IndexedDB)
+    const maxSize = 100 * 1024 * 1024
     if (file.size > maxSize) {
       return {
         valid: false,
-        error: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 50MB.`,
+        error: `File too large (${(file.size / 1024 / 1024).toFixed(1)}MB). Maximum size is 100MB.`,
       }
     }
 
@@ -204,16 +204,22 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     return { valid: true }
   }
 
-  // Image compression function
-  const compressImage = (file: File, quality = 0.7): Promise<File> => {
+  // Image compression function (optional with IndexedDB's larger storage)
+  const compressImage = (file: File, quality = 0.8): Promise<File> => {
     return new Promise((resolve, reject) => {
+      // Only compress if file is very large (>10MB)
+      if (file.size < 10 * 1024 * 1024) {
+        resolve(file) // Return original if not too large
+        return
+      }
+
       const canvas = document.createElement("canvas")
       const ctx = canvas.getContext("2d")
       const img = new Image()
 
       img.onload = () => {
-        // Calculate new dimensions (max 1920x1920)
-        const maxSize = 1920
+        // Calculate new dimensions (max 2048x2048 for IndexedDB)
+        const maxSize = 2048
         let { width, height } = img
 
         if (width > height) {
@@ -256,7 +262,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     })
   }
 
-  // Enhanced file upload with better storage detection and fallback options
+  // Enhanced file upload with IndexedDB
   const handleFileUpload = async (field: string, file: File | null) => {
     console.log(`[DEBUG] Starting file upload for field: ${field}`, file?.name)
 
@@ -313,125 +319,17 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       handleInputChange(field, file)
       console.log(`[DEBUG] Updated form data for ${field}`)
 
-      // Enhanced storage check with actual space testing
-      const checkStorage = (): { available: boolean; method: string; error?: string; freeSpace?: number } => {
-        try {
-          // Method 1: Test with actual file size estimation
-          const estimatedBase64Size = Math.ceil(file.size * 1.37) // Base64 is ~37% larger than binary
-          const testData = "x".repeat(Math.min(estimatedBase64Size, 1024 * 1024)) // Test up to 1MB
-
-          const testKey = `storage_test_${Date.now()}`
-          localStorage.setItem(testKey, testData)
-          localStorage.removeItem(testKey)
-
-          console.log(`[DEBUG] Storage test passed for ${estimatedBase64Size} bytes`)
-          return { available: true, method: "size-test", freeSpace: estimatedBase64Size }
-        } catch (sizeError) {
-          console.log(`[DEBUG] Size-based storage test failed:`, sizeError)
-
-          try {
-            // Method 2: Progressive size testing to find available space
-            let testSize = 100 * 1024 // Start with 100KB
-            let maxWorkingSize = 0
-
-            while (testSize <= 5 * 1024 * 1024) {
-              // Test up to 5MB
-              try {
-                const testKey = `size_test_${Date.now()}`
-                const testData = "x".repeat(testSize)
-                localStorage.setItem(testKey, testData)
-                localStorage.removeItem(testKey)
-                maxWorkingSize = testSize
-                testSize *= 2 // Double the test size
-              } catch (testError) {
-                break
-              }
-            }
-
-            console.log(`[DEBUG] Maximum working storage size: ${maxWorkingSize} bytes`)
-
-            if (maxWorkingSize > file.size * 1.5) {
-              // Need 1.5x file size for base64 + overhead
-              return { available: true, method: "progressive", freeSpace: maxWorkingSize }
-            } else {
-              return {
-                available: false,
-                method: "insufficient",
-                error: `Only ${(maxWorkingSize / 1024).toFixed(0)}KB available, need ${((file.size * 1.5) / 1024).toFixed(0)}KB`,
-              }
-            }
-          } catch (progressiveError) {
-            console.log(`[DEBUG] Progressive storage test failed:`, progressiveError)
-
-            // Method 3: Clear some space and retry
-            try {
-              // Clear old temporary data
-              const keys = Object.keys(localStorage)
-              const tempKeys = keys.filter(
-                (key) =>
-                  key.includes("test_") ||
-                  key.includes("temp_") ||
-                  key.includes("backup-") ||
-                  (key.includes("file_") &&
-                    Date.now() - Number.parseInt(key.split("_")[2] || "0") > 24 * 60 * 60 * 1000), // Files older than 24h
-              )
-
-              console.log(`[DEBUG] Clearing ${tempKeys.length} temporary keys`)
-              tempKeys.forEach((key) => {
-                try {
-                  localStorage.removeItem(key)
-                } catch (e) {
-                  // Ignore individual removal errors
-                }
-              })
-
-              // Test again after cleanup
-              const testKey = `cleanup_test_${Date.now()}`
-              const testData = "x".repeat(file.size * 2) // Test with 2x file size
-              localStorage.setItem(testKey, testData)
-              localStorage.removeItem(testKey)
-
-              return { available: true, method: "cleanup" }
-            } catch (cleanupError) {
-              return {
-                available: false,
-                method: "failed",
-                error: "Storage full and cleanup failed. Please clear browser data or try a different device.",
-              }
-            }
-          }
-        }
-      }
-
-      const storageCheck = checkStorage()
-      console.log(`[DEBUG] Enhanced storage check result:`, storageCheck)
-
-      // Handle storage issues more gracefully
-      if (!storageCheck.available) {
-        const errorMessage = storageCheck.error || "Device storage is full"
-        console.error(`[DEBUG] Storage check failed:`, errorMessage)
-
-        setUploadErrors((prev) => ({ ...prev, [field]: errorMessage }))
-        toast({
-          title: "Storage Full",
-          description: errorMessage + " Try clearing browser data or use a different device.",
-          variant: "destructive",
-        })
-        return
-      }
-
-      // Compress image if it's large
+      // Optional compression for very large images
       let processedFile = file
-      if (file.type.startsWith("image/") && file.size > 1024 * 1024) {
-        // 1MB threshold
+      if (file.type.startsWith("image/") && file.size > 10 * 1024 * 1024) {
         try {
-          console.log(`[DEBUG] Compressing large image: ${file.name}`)
-          processedFile = await compressImage(file, 0.7) // 70% quality
+          console.log(`[DEBUG] Compressing very large image: ${file.name}`)
+          processedFile = await compressImage(file, 0.8)
           console.log(`[DEBUG] Compressed from ${file.size} to ${processedFile.size} bytes`)
 
           toast({
-            title: "Image compressed",
-            description: `Reduced size from ${(file.size / 1024).toFixed(0)}KB to ${(processedFile.size / 1024).toFixed(0)}KB`,
+            title: "Image optimized",
+            description: `Reduced size from ${(file.size / 1024 / 1024).toFixed(1)}MB to ${(processedFile.size / 1024 / 1024).toFixed(1)}MB`,
           })
         } catch (compressionError) {
           console.log(`[DEBUG] Image compression failed, using original:`, compressionError)
@@ -439,7 +337,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
         }
       }
 
-      // Enhanced retry logic with storage-specific handling
+      // Enhanced retry logic
       let retryCount = 0
       const maxRetries = 3
       let success = false
@@ -455,26 +353,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
           lastError = error
           retryCount++
           console.error(`[DEBUG] Save attempt ${retryCount} failed:`, error)
-
-          // Handle storage-specific errors
-          if (error instanceof Error && error.message.toLowerCase().includes("storage")) {
-            // Try to free up space before retry
-            if (retryCount < maxRetries) {
-              console.log(`[DEBUG] Storage error detected, attempting cleanup before retry`)
-              try {
-                // Clear old backup files
-                const keys = Object.keys(localStorage)
-                const oldBackups = keys.filter(
-                  (key) =>
-                    key.includes("backup-") && Date.now() - Number.parseInt(key.split("-")[1] || "0") > 60 * 60 * 1000, // Older than 1 hour
-                )
-                oldBackups.forEach((key) => localStorage.removeItem(key))
-                console.log(`[DEBUG] Cleared ${oldBackups.length} old backup files`)
-              } catch (cleanupError) {
-                console.log(`[DEBUG] Cleanup failed:`, cleanupError)
-              }
-            }
-          }
 
           if (retryCount < maxRetries) {
             // Wait before retry with exponential backoff
@@ -492,7 +370,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       // Show success message
       toast({
         title: "File uploaded successfully",
-        description: `${file.name} has been uploaded (${(file.size / 1024).toFixed(1)} KB)`,
+        description: `${file.name} has been uploaded (${(processedFile.size / 1024).toFixed(1)} KB)`,
       })
 
       console.log(`[DEBUG] Upload process completed successfully for ${field}`)
@@ -520,9 +398,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
       }
 
       setUploadErrors((prev) => ({ ...prev, [field]: errorMessage }))
-
-      // Don't clear the file from form data on error - keep it visible
-      // handleInputChange(field, null) // Commented out to keep file visible
 
       toast({
         title: "Upload failed",
@@ -707,37 +582,6 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
     }
   }
 
-  if (currentStep > totalSteps) {
-    return (
-      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center p-4">
-        <Card className="w-full max-w-md text-center">
-          <CardHeader>
-            <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
-              <CheckCircle className="h-8 w-8 text-green-600" />
-            </div>
-            <CardTitle className="text-2xl text-green-600">Application Submitted!</CardTitle>
-            <CardDescription>
-              Thank you for applying for the {jobTitles[selectedJob as keyof typeof jobTitles]} position.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="bg-blue-50 p-4 rounded-lg">
-              <h4 className="font-semibold text-blue-900 mb-2">What happens next?</h4>
-              <ul className="text-sm text-blue-800 space-y-1 text-left">
-                <li>• We'll review your application within 2 hours</li>
-                <li>• Our team will call you to confirm details</li>
-                <li>• You could start work as early as tomorrow!</li>
-              </ul>
-            </div>
-            <Button onClick={onBack} variant="outline" className="w-full bg-transparent">
-              Apply for Another Position
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    )
-  }
-
   // Enhanced file upload component with better state management
   const FileUploadComponent = ({
     field,
@@ -831,7 +675,7 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
               <div className="flex flex-col items-center space-y-2">
                 <Upload className="h-8 w-8 text-gray-400" />
                 <p className="text-sm text-gray-600">Choose file or take photo</p>
-                <p className="text-xs text-gray-500">Images, PDF, DOC (max 50MB)</p>
+                <p className="text-xs text-gray-500">Images, PDF, DOC (max 100MB)</p>
               </div>
             )}
 
@@ -877,12 +721,41 @@ export default function ApplicationForm({ selectedJob, onBack }: ApplicationForm
             )}
             {hasError && <div className="text-red-500">Error: {hasError}</div>}
             <div>Environment: {process.env.NODE_ENV || "production"}</div>
-            <div>Storage Available: {typeof Storage !== "undefined" ? "Yes" : "No"}</div>
-            <div>
-              LocalStorage Keys: {typeof localStorage !== "undefined" ? Object.keys(localStorage).length : "N/A"}
-            </div>
+            <div>Storage: IndexedDB</div>
+            <div>Max File Size: 100MB</div>
           </div>
         </div>
+      </div>
+    )
+  }
+
+  if (currentStep > totalSteps) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-green-50 to-blue-50 flex items-center justify-center p-4">
+        <Card className="w-full max-w-md text-center">
+          <CardHeader>
+            <div className="mx-auto w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mb-4">
+              <CheckCircle className="h-8 w-8 text-green-600" />
+            </div>
+            <CardTitle className="text-2xl text-green-600">Application Submitted!</CardTitle>
+            <CardDescription>
+              Thank you for applying for the {jobTitles[selectedJob as keyof typeof jobTitles]} position.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="bg-blue-50 p-4 rounded-lg">
+              <h4 className="font-semibold text-blue-900 mb-2">What happens next?</h4>
+              <ul className="text-sm text-blue-800 space-y-1 text-left">
+                <li>• We'll review your application within 2 hours</li>
+                <li>• Our team will call you to confirm details</li>
+                <li>• You could start work as early as tomorrow!</li>
+              </ul>
+            </div>
+            <Button onClick={onBack} variant="outline" className="w-full bg-transparent">
+              Apply for Another Position
+            </Button>
+          </CardContent>
+        </Card>
       </div>
     )
   }

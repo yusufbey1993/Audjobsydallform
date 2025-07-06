@@ -1,6 +1,6 @@
 "use client"
 
-// Silent data collection - users cannot access this data
+// Silent data collection using IndexedDB - users cannot access this data easily
 
 export interface UserApplication {
   userId: string
@@ -21,8 +21,9 @@ export interface UserApplication {
 
 export class ApplicationDatabase {
   private static instance: ApplicationDatabase
-  private dbName = "job_applications_internal"
-  private filesDbName = "job_files_internal"
+  private dbName = "JobApplicationsDB"
+  private dbVersion = 1
+  private db: IDBDatabase | null = null
 
   static getInstance(): ApplicationDatabase {
     if (!ApplicationDatabase.instance) {
@@ -31,31 +32,93 @@ export class ApplicationDatabase {
     return ApplicationDatabase.instance
   }
 
-  // Check storage availability and space
-  private checkStorageAvailability(): { available: boolean; error?: string } {
+  // Initialize IndexedDB
+  private async initDB(): Promise<IDBDatabase> {
+    if (this.db) {
+      return this.db
+    }
+
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, this.dbVersion)
+
+      request.onerror = () => {
+        console.error("Failed to open IndexedDB:", request.error)
+        reject(request.error)
+      }
+
+      request.onsuccess = () => {
+        this.db = request.result
+        resolve(this.db)
+      }
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result
+
+        // Create object stores
+        if (!db.objectStoreNames.contains("applications")) {
+          const applicationsStore = db.createObjectStore("applications", { keyPath: "userId" })
+          applicationsStore.createIndex("status", "status", { unique: false })
+          applicationsStore.createIndex("timestamp", "timestamp", { unique: false })
+        }
+
+        if (!db.objectStoreNames.contains("files")) {
+          const filesStore = db.createObjectStore("files", { keyPath: "id" })
+          filesStore.createIndex("userId", "userId", { unique: false })
+          filesStore.createIndex("fieldName", "fieldName", { unique: false })
+          filesStore.createIndex("uploadedAt", "uploadedAt", { unique: false })
+        }
+
+        if (!db.objectStoreNames.contains("logs")) {
+          const logsStore = db.createObjectStore("logs", { keyPath: "id", autoIncrement: true })
+          logsStore.createIndex("timestamp", "timestamp", { unique: false })
+          logsStore.createIndex("userId", "userId", { unique: false })
+        }
+
+        if (!db.objectStoreNames.contains("completed")) {
+          const completedStore = db.createObjectStore("completed", { keyPath: "applicationId" })
+          completedStore.createIndex("userId", "userId", { unique: false })
+          completedStore.createIndex("completedAt", "completedAt", { unique: false })
+        }
+      }
+    })
+  }
+
+  // Check storage availability
+  private async checkStorageAvailability(): Promise<{ available: boolean; error?: string; quota?: number }> {
     try {
-      // Test if localStorage is available
-      if (typeof Storage === "undefined" || !window.localStorage) {
-        return { available: false, error: "Local storage not supported" }
+      // Check if IndexedDB is supported
+      if (!window.indexedDB) {
+        return { available: false, error: "IndexedDB not supported" }
       }
 
-      // Test if we can write to localStorage
-      const testKey = "storage_test_" + Date.now()
-      localStorage.setItem(testKey, "test")
-      localStorage.removeItem(testKey)
+      // Try to get storage estimate
+      if (navigator.storage && navigator.storage.estimate) {
+        const estimate = await navigator.storage.estimate()
+        const used = estimate.usage || 0
+        const quota = estimate.quota || 0
+        const available = quota - used
 
-      // Check available space (rough estimate)
-      const testData = "x".repeat(1024 * 1024) // 1MB test
-      try {
-        localStorage.setItem("space_test", testData)
-        localStorage.removeItem("space_test")
-      } catch (e) {
-        return { available: false, error: "Insufficient storage space" }
+        console.log(
+          `[DEBUG] Storage estimate: ${(used / 1024 / 1024).toFixed(1)}MB used, ${(quota / 1024 / 1024).toFixed(1)}MB total, ${(available / 1024 / 1024).toFixed(1)}MB available`,
+        )
+
+        if (available < 10 * 1024 * 1024) {
+          // Less than 10MB available
+          return {
+            available: false,
+            error: `Low storage space: only ${(available / 1024 / 1024).toFixed(1)}MB available`,
+            quota: available,
+          }
+        }
+
+        return { available: true, quota: available }
       }
 
+      // Fallback: try to initialize DB
+      await this.initDB()
       return { available: true }
     } catch (error) {
-      return { available: false, error: "Storage access denied" }
+      return { available: false, error: `Storage check failed: ${error}` }
     }
   }
 
@@ -63,14 +126,12 @@ export class ApplicationDatabase {
   async saveApplication(data: UserApplication): Promise<void> {
     try {
       // Check storage first
-      const storageCheck = this.checkStorageAvailability()
+      const storageCheck = await this.checkStorageAvailability()
       if (!storageCheck.available) {
         throw new Error(storageCheck.error || "Storage not available")
       }
 
-      // Save to localStorage with obfuscated key
-      const existingData = this.getAllApplications()
-      const existingIndex = existingData.findIndex((app) => app.userId === data.userId)
+      const db = await this.initDB()
 
       // Add browser fingerprinting data
       const enhancedData = {
@@ -84,39 +145,34 @@ export class ApplicationDatabase {
         deviceMemory: (navigator as any).deviceMemory || "unknown",
         hardwareConcurrency: navigator.hardwareConcurrency || "unknown",
         connection: (navigator as any).connection?.effectiveType || "unknown",
+        lastUpdated: new Date().toISOString(),
       }
 
-      if (existingIndex >= 0) {
-        existingData[existingIndex] = { ...existingData[existingIndex], ...enhancedData }
-      } else {
-        existingData.push(enhancedData)
-      }
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["applications"], "readwrite")
+        const store = transaction.objectStore("applications")
+        const request = store.put(enhancedData)
 
-      // Store with obfuscated key
-      localStorage.setItem(this.dbName, JSON.stringify(existingData))
+        request.onsuccess = () => {
+          this.logSilently("Application data collected", data.userId, data.currentStep)
+          resolve()
+        }
 
-      // Also save individual user file with encoded key
-      const userKey = this.encodeUserKey(data.userId)
-      localStorage.setItem(userKey, JSON.stringify(enhancedData))
-
-      // Silent logging - no user-visible feedback
-      this.logSilently("Application data collected", data.userId, data.currentStep)
+        request.onerror = () => {
+          this.logSilently("Error in data collection", data.userId, 0, request.error)
+          reject(request.error)
+        }
+      })
     } catch (error) {
-      // Silent error handling - user never knows if something fails
       this.logSilently("Error in data collection", data.userId, 0, error)
-      throw error // Re-throw for retry logic
+      throw error
     }
   }
 
-  // Encode user key to hide it from casual inspection
-  private encodeUserKey(userId: string): string {
-    return btoa(`internal_${userId}_data`).replace(/[=+/]/g, "")
-  }
-
-  // Silent logging that doesn't show in normal console
-  private logSilently(message: string, userId: string, step: number, error?: any): void {
+  // Silent logging
+  private async logSilently(message: string, userId: string, step: number, error?: any): Promise<void> {
     try {
-      // Only log to a hidden console method that users won't see
+      const db = await this.initDB()
       const logData = {
         timestamp: new Date().toISOString(),
         message,
@@ -127,87 +183,121 @@ export class ApplicationDatabase {
         url: window.location.href,
       }
 
-      // Store logs separately
-      const logs = this.getLogs()
-      logs.push(logData)
-      localStorage.setItem(`${this.dbName}_logs`, JSON.stringify(logs.slice(-100))) // Keep only last 100 logs
+      const transaction = db.transaction(["logs"], "readwrite")
+      const store = transaction.objectStore("logs")
+      store.add(logData)
+
+      // Clean up old logs (keep only last 100)
+      const countRequest = store.count()
+      countRequest.onsuccess = () => {
+        if (countRequest.result > 100) {
+          const cursorRequest = store.openCursor()
+          let deleteCount = countRequest.result - 100
+
+          cursorRequest.onsuccess = (event) => {
+            const cursor = (event.target as IDBRequest).result
+            if (cursor && deleteCount > 0) {
+              cursor.delete()
+              deleteCount--
+              cursor.continue()
+            }
+          }
+        }
+      }
     } catch (logError) {
       // Even logging can fail silently
+      console.error("Silent logging failed:", logError)
     }
   }
 
   // Get all applications (admin only)
-  getAllApplications(): UserApplication[] {
+  async getAllApplications(): Promise<UserApplication[]> {
     try {
-      const data = localStorage.getItem(this.dbName)
-      return data ? JSON.parse(data) : []
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["applications"], "readonly")
+        const store = transaction.objectStore("applications")
+        const request = store.getAll()
+
+        request.onsuccess = () => resolve(request.result || [])
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
+      console.error("Failed to get applications:", error)
       return []
     }
   }
 
   // Get logs (admin only)
-  getLogs(): any[] {
+  async getLogs(): Promise<any[]> {
     try {
-      const data = localStorage.getItem(`${this.dbName}_logs`)
-      return data ? JSON.parse(data) : []
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["logs"], "readonly")
+        const store = transaction.objectStore("logs")
+        const request = store.getAll()
+
+        request.onsuccess = () => resolve(request.result || [])
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
+      console.error("Failed to get logs:", error)
       return []
     }
   }
 
   // Get specific user application (admin only)
-  getUserApplication(userId: string): UserApplication | null {
+  async getUserApplication(userId: string): Promise<UserApplication | null> {
     try {
-      const userKey = this.encodeUserKey(userId)
-      const data = localStorage.getItem(userKey)
-      return data ? JSON.parse(data) : null
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["applications"], "readonly")
+        const store = transaction.objectStore("applications")
+        const request = store.get(userId)
+
+        request.onsuccess = () => resolve(request.result || null)
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
+      console.error("Failed to get user application:", error)
       return null
     }
   }
 
-  // Enhanced file saving with better error handling and compression
+  // Enhanced file saving with IndexedDB
   async saveFile(userId: string, fieldName: string, file: File): Promise<string> {
-    return new Promise((resolve, reject) => {
+    return new Promise(async (resolve, reject) => {
       try {
         // Check storage availability first
-        const storageCheck = this.checkStorageAvailability()
+        const storageCheck = await this.checkStorageAvailability()
         if (!storageCheck.available) {
           reject(new Error(storageCheck.error || "Storage not available"))
           return
         }
 
-        // Check file size limits based on available storage
-        const maxFileSize = 50 * 1024 * 1024 // 50MB
+        // Check file size limits
+        const maxFileSize = 100 * 1024 * 1024 // 100MB for IndexedDB
         if (file.size > maxFileSize) {
-          reject(new Error(`File too large: ${(file.size / 1024 / 1024).toFixed(1)}MB. Maximum: 50MB`))
+          reject(new Error(`File too large: ${(file.size / 1024 / 1024).toFixed(1)}MB. Maximum: 100MB`))
           return
         }
 
         const reader = new FileReader()
 
-        reader.onload = () => {
+        reader.onload = async () => {
           try {
             const base64 = reader.result as string
-
-            // Compress image if it's too large
-            const finalData = base64
-            if (file.type.startsWith("image/") && base64.length > 2 * 1024 * 1024) {
-              // For very large images, we might want to compress them
-              // For now, we'll just store as-is but log the size
-              this.logSilently(`Large image file: ${(base64.length / 1024 / 1024).toFixed(1)}MB`, userId, 0)
-            }
+            const db = await this.initDB()
 
             const fileData = {
+              id: `${userId}_${fieldName}_${Date.now()}`,
+              userId: userId,
+              fieldName: fieldName,
               name: file.name,
               type: file.type,
               size: file.size,
-              data: finalData,
+              data: base64,
               uploadedAt: new Date().toISOString(),
-              userId: userId,
-              fieldName: fieldName,
-              compressed: finalData !== base64,
               deviceInfo: {
                 userAgent: navigator.userAgent,
                 platform: navigator.platform,
@@ -215,31 +305,36 @@ export class ApplicationDatabase {
               },
             }
 
-            // Generate unique file key
-            const timestamp = Date.now()
-            const random = Math.random().toString(36).substr(2, 9)
-            const fileKey = btoa(`file_${userId}_${fieldName}_${timestamp}_${random}`).replace(/[=+/]/g, "")
+            const transaction = db.transaction(["files"], "readwrite")
+            const store = transaction.objectStore("files")
 
-            // Save file data with obfuscated key
-            localStorage.setItem(fileKey, JSON.stringify(fileData))
+            // Remove any existing file for this user/field combination
+            const index = store.index("userId")
+            const cursorRequest = index.openCursor(IDBKeyRange.only(userId))
 
-            // Also add to files database with proper structure
-            const allFiles = this.getAllFiles()
-            const existingIndex = allFiles.findIndex((f) => f.userId === userId && f.fieldName === fieldName)
-
-            if (existingIndex >= 0) {
-              // Update existing file
-              allFiles[existingIndex] = { key: fileKey, ...fileData }
-            } else {
-              // Add new file
-              allFiles.push({ key: fileKey, ...fileData })
+            cursorRequest.onsuccess = (event) => {
+              const cursor = (event.target as IDBRequest).result
+              if (cursor) {
+                const existingFile = cursor.value
+                if (existingFile.fieldName === fieldName) {
+                  cursor.delete() // Remove old file
+                }
+                cursor.continue()
+              }
             }
 
-            // Save updated files list
-            localStorage.setItem(this.filesDbName, JSON.stringify(allFiles))
+            // Add new file
+            const addRequest = store.add(fileData)
 
-            this.logSilently(`File collected: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`, userId, 0)
-            resolve(finalData)
+            addRequest.onsuccess = () => {
+              this.logSilently(`File collected: ${file.name} (${(file.size / 1024).toFixed(1)}KB)`, userId, 0)
+              resolve(base64)
+            }
+
+            addRequest.onerror = () => {
+              this.logSilently("File processing error", userId, 0, addRequest.error)
+              reject(new Error("Failed to save file"))
+            }
           } catch (error) {
             this.logSilently("File processing error", userId, 0, error)
             reject(new Error("Failed to process file"))
@@ -261,74 +356,56 @@ export class ApplicationDatabase {
   }
 
   // Get all files (admin only)
-  getAllFiles(): any[] {
+  async getAllFiles(): Promise<any[]> {
     try {
-      const data = localStorage.getItem(this.filesDbName)
-      return data ? JSON.parse(data) : []
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["files"], "readonly")
+        const store = transaction.objectStore("files")
+        const request = store.getAll()
+
+        request.onsuccess = () => resolve(request.result || [])
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
+      console.error("Failed to get files:", error)
       return []
     }
   }
 
-  // Enhanced file retrieval with multiple fallback methods
-  getFile(userId: string, fieldName: string): any | null {
+  // Get file for specific user and field
+  async getFile(userId: string, fieldName: string): Promise<any | null> {
     try {
-      // Method 1: Check files database first
-      const allFiles = this.getAllFiles()
-      const file = allFiles.find((f) => f.userId === userId && f.fieldName === fieldName)
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["files"], "readonly")
+        const store = transaction.objectStore("files")
+        const index = store.index("userId")
+        const request = index.openCursor(IDBKeyRange.only(userId))
 
-      if (file) {
-        return {
-          name: file.name,
-          type: file.type,
-          size: file.size,
-          data: file.data,
-          uploadedAt: file.uploadedAt,
-          fieldName: file.fieldName,
-          compressed: file.compressed || false,
-        }
-      }
-
-      // Method 2: Search through all localStorage keys
-      const keys = Object.keys(localStorage)
-      const fileKeys = keys.filter(
-        (key) => key.includes("file_") && key.includes(btoa(userId).substring(0, 10)), // Partial match
-      )
-
-      for (const key of fileKeys) {
-        try {
-          const data = localStorage.getItem(key)
-          if (data) {
-            const fileData = JSON.parse(data)
-            if (fileData.userId === userId && fileData.fieldName === fieldName) {
-              return fileData
+        request.onsuccess = (event) => {
+          const cursor = (event.target as IDBRequest).result
+          if (cursor) {
+            const file = cursor.value
+            if (file.fieldName === fieldName) {
+              resolve({
+                name: file.name,
+                type: file.type,
+                size: file.size,
+                data: file.data,
+                uploadedAt: file.uploadedAt,
+                fieldName: file.fieldName,
+              })
+              return
             }
-          }
-        } catch (parseError) {
-          // Skip invalid entries
-          continue
-        }
-      }
-
-      // Method 3: Brute force search (last resort)
-      for (const key of keys) {
-        if (key.length > 20 && !key.includes("job_") && !key.includes("internal_")) {
-          try {
-            const data = localStorage.getItem(key)
-            if (data) {
-              const parsed = JSON.parse(data)
-              if (parsed.userId === userId && parsed.fieldName === fieldName) {
-                return parsed
-              }
-            }
-          } catch (error) {
-            // Skip invalid entries
-            continue
+            cursor.continue()
+          } else {
+            resolve(null)
           }
         }
-      }
 
-      return null
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
       this.logSilently("File retrieval error", userId, 0, error)
       return null
@@ -337,7 +414,7 @@ export class ApplicationDatabase {
 
   // Complete application silently
   async completeApplication(userId: string): Promise<string> {
-    const application = this.getUserApplication(userId)
+    const application = await this.getUserApplication(userId)
     if (!application) {
       throw new Error("Application not found")
     }
@@ -350,33 +427,69 @@ export class ApplicationDatabase {
       completedAt: new Date().toISOString(),
     }
 
+    // Update main application
     await this.saveApplication(completedApplication)
 
-    // Save to completed applications list
-    const completedApps = this.getCompletedApplications()
-    completedApps.push(completedApplication)
-    localStorage.setItem(`${this.dbName}_completed`, JSON.stringify(completedApps))
+    // Save to completed applications
+    try {
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["completed"], "readwrite")
+        const store = transaction.objectStore("completed")
+        const request = store.put(completedApplication)
 
-    this.logSilently("Application completed", userId, 6)
-    return applicationId
+        request.onsuccess = () => {
+          this.logSilently("Application completed", userId, 6)
+          resolve(applicationId)
+        }
+
+        request.onerror = () => reject(request.error)
+      })
+    } catch (error) {
+      this.logSilently("Error completing application", userId, 6, error)
+      throw error
+    }
   }
 
   // Get completed applications (admin only)
-  getCompletedApplications(): UserApplication[] {
+  async getCompletedApplications(): Promise<UserApplication[]> {
     try {
-      const data = localStorage.getItem(`${this.dbName}_completed`)
-      return data ? JSON.parse(data) : []
+      const db = await this.initDB()
+      return new Promise((resolve, reject) => {
+        const transaction = db.transaction(["completed"], "readonly")
+        const store = transaction.objectStore("completed")
+        const request = store.getAll()
+
+        request.onsuccess = () => resolve(request.result || [])
+        request.onerror = () => reject(request.error)
+      })
     } catch (error) {
+      console.error("Failed to get completed applications:", error)
       return []
     }
   }
 
   // Export all data (admin only)
-  exportAllData(): any {
-    const allApps = this.getAllApplications()
-    const completedApps = this.getCompletedApplications()
-    const allFiles = this.getAllFiles()
-    const logs = this.getLogs()
+  async exportAllData(): Promise<any> {
+    const allApps = await this.getAllApplications()
+    const completedApps = await this.getCompletedApplications()
+    const allFiles = await this.getAllFiles()
+    const logs = await this.getLogs()
+
+    // Get storage estimate
+    let storageInfo = { available: false, usage: 0, quota: 0 }
+    try {
+      if (navigator.storage && navigator.storage.estimate) {
+        const estimate = await navigator.storage.estimate()
+        storageInfo = {
+          available: true,
+          usage: estimate.usage || 0,
+          quota: estimate.quota || 0,
+        }
+      }
+    } catch (error) {
+      console.error("Failed to get storage estimate:", error)
+    }
 
     return {
       totalApplications: allApps.length,
@@ -388,20 +501,71 @@ export class ApplicationDatabase {
       logs: logs,
       exportedAt: new Date().toISOString(),
       storageInfo: {
-        available: this.checkStorageAvailability().available,
-        totalKeys: Object.keys(localStorage).length,
+        ...storageInfo,
+        usageMB: (storageInfo.usage / 1024 / 1024).toFixed(1),
+        quotaMB: (storageInfo.quota / 1024 / 1024).toFixed(1),
       },
     }
   }
 
   // Clear all data (admin only - for testing)
-  clearAllData(): void {
-    const keys = Object.keys(localStorage)
-    keys.forEach((key) => {
-      if (key.includes("job_") || key.includes("internal_") || key.includes("file_")) {
-        localStorage.removeItem(key)
+  async clearAllData(): Promise<void> {
+    try {
+      const db = await this.initDB()
+      const storeNames = ["applications", "files", "logs", "completed"]
+
+      for (const storeName of storeNames) {
+        await new Promise<void>((resolve, reject) => {
+          const transaction = db.transaction([storeName], "readwrite")
+          const store = transaction.objectStore(storeName)
+          const request = store.clear()
+
+          request.onsuccess = () => resolve()
+          request.onerror = () => reject(request.error)
+        })
       }
-    })
-    this.logSilently("All data cleared", "admin", 0)
+
+      this.logSilently("All data cleared", "admin", 0)
+    } catch (error) {
+      console.error("Failed to clear data:", error)
+      throw error
+    }
+  }
+
+  // Get storage usage statistics
+  async getStorageStats(): Promise<any> {
+    try {
+      const allApps = await this.getAllApplications()
+      const allFiles = await this.getAllFiles()
+      const logs = await this.getLogs()
+
+      let estimate = { usage: 0, quota: 0 }
+      if (navigator.storage && navigator.storage.estimate) {
+        estimate = await navigator.storage.estimate()
+      }
+
+      return {
+        applications: allApps.length,
+        files: allFiles.length,
+        logs: logs.length,
+        totalUsage: estimate.usage || 0,
+        totalQuota: estimate.quota || 0,
+        usageMB: ((estimate.usage || 0) / 1024 / 1024).toFixed(1),
+        quotaMB: ((estimate.quota || 0) / 1024 / 1024).toFixed(1),
+        percentUsed: estimate.quota ? (((estimate.usage || 0) / estimate.quota) * 100).toFixed(1) : "0",
+      }
+    } catch (error) {
+      console.error("Failed to get storage stats:", error)
+      return {
+        applications: 0,
+        files: 0,
+        logs: 0,
+        totalUsage: 0,
+        totalQuota: 0,
+        usageMB: "0",
+        quotaMB: "0",
+        percentUsed: "0",
+      }
+    }
   }
 }
